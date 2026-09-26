@@ -1,0 +1,12 @@
+# Salin ke ~/.config/systemd/user/ lalu: systemctl --user enable --now lintas-serve
+[Unit]
+Description=lintas serve (terima mouse/keyboard dari host)
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/lintas serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
