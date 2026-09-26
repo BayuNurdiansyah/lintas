@@ -58,6 +58,13 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
   - `clipboard::read_exact_patient` (payload reads) and `FrameReader::poll` (header reads) both treat `WouldBlock`/`TimedOut` as "keep waiting", never as a real error — only an actual EOF/disconnect ends the loop.
 - Manually smoke-tested on this machine (loopback `serve`+`host`, real device grab briefly under a `timeout` guard): connects, exchanges input, and disconnects cleanly with no hangs or panics. Meaningful clipboard *content* propagation (i.e. different clipboards on each side) still needs a real test across the laptop and PC — a single-machine loopback test shares one system clipboard, so it can't show a value actually crossing over.
 
+### Config file (src/config.rs)
+
+- `~/.config/lintas/config.toml` (or `$XDG_CONFIG_HOME/lintas/config.toml`) sets defaults for `port`, `width`, `height`, `speed`, `side`, `no_warp`, `peer` — every one optional, a CLI flag always wins over it, and an unset value falls through to the same built-in default/auto-detection as before. Template at `packaging/config.toml.example`.
+- Deliberately **not** a real TOML parser — just `key = value` lines, `#` comments, blank lines ignored (see the parser in `config.rs`). Pulling in `serde`+`toml` for half a dozen scalar fields wasn't worth the dependency weight (same "avoid heavy deps" reasoning as elsewhere).
+- `peer` lets `lintas host` (no args at all) connect straight to a saved address, skipping both typing an IP and the mDNS discovery prompt — handy combined with the `lintas-host.service` systemd unit, which no longer strictly needs `lintas-host.env`'s `LINTAS_PEER`/`LINTAS_SIDE` if they're set here instead (either mechanism still works).
+- Manually verified on this machine: `width`/`height` from the config file were picked up and overrode auto-detection when no matching CLI flag was passed.
+
 ## My setup
 
 - Host: CachyOS PC with 2 monitors.
@@ -81,7 +88,10 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
    - [x] mDNS auto-discovery — implemented, tested on one machine, needs a real cross-machine test (laptop discovering the PC or vice versa).
 3. Clipboard sync — implemented (`src/clipboard.rs`), needs a real cross-machine content test.
-4. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).
+4. Phase 4: settings UI for monitor/device layout + tray icon.
+   - [x] Config file for defaults (`src/config.rs`) — implemented and verified on this machine.
+   - [ ] Tray icon — not started.
+   - [ ] Full settings GUI — not started; if/when it happens, prefer Slint over Tauri (native Rust, no webview/JS toolchain, fits the single-lightweight-binary rule better).
 5. Later: touchpad capture on host, more than two machines, AUR/AppImage packaging.
 
 ## Rules

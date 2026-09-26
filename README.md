@@ -51,6 +51,10 @@ lintas host --side left
 
 Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an emergency exit.
 
+### Config file
+
+Any of the above can be set as a default instead of a flag, in `~/.config/lintas/config.toml` (copy `packaging/config.toml.example`). A CLI flag always overrides the config file. `host` can also set `peer` there so `lintas host` alone connects without typing an IP or waiting on mDNS.
+
 Default port is TCP `4242`. Open it in the firewall of the machine running `serve`, along with UDP `5353` (mDNS) on both machines if you want auto-discovery.
 
 ### Pairing

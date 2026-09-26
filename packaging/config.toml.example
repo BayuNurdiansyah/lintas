@@ -1,0 +1,15 @@
+# Copy to ~/.config/lintas/config.toml. Every key is optional; a CLI flag
+# always overrides the matching value here, and anything left out (or left
+# out of this file entirely) falls back to auto-detection or the built-in
+# default. Comments and blank lines are ignored.
+
+# Shared
+# port = 4242
+# width = 3840
+# height = 1080
+# no_warp = false
+
+# host only
+# side = "left"
+# speed = 1.0
+# peer = "192.168.1.50:4242"

@@ -30,6 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod clipboard;
+mod config;
 mod discover;
 mod tls;
 
@@ -116,34 +117,42 @@ struct Screen {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let warp = !args.iter().any(|a| a == "--no-warp");
+    let config = config::load();
+    let warp = !args.iter().any(|a| a == "--no-warp") && !config.no_warp.unwrap_or(false);
     let res = match args.get(1).map(|s| s.as_str()) {
         Some("serve") => {
             let port = opt(&args, "--port")
                 .and_then(|p| p.parse().ok())
+                .or(config.port)
                 .unwrap_or(DEFAULT_PORT);
-            serve(port, screen_from_args(&args), warp)
+            serve(port, screen_from_args(&args, &config), warp)
         }
         Some("host") => {
             let peer = if args.len() > 2 && !args[2].starts_with("--") {
-                let mut peer = args[2].clone();
-                if !peer.contains(':') {
-                    peer = format!("{peer}:{DEFAULT_PORT}");
-                }
-                Ok(peer)
+                Some(args[2].clone())
             } else {
-                discover::find_peer().map(|a| a.to_string())
+                config.peer.clone()
+            };
+            let peer = match peer {
+                Some(mut peer) => {
+                    if !peer.contains(':') {
+                        peer = format!("{peer}:{DEFAULT_PORT}");
+                    }
+                    Ok(peer)
+                }
+                None => discover::find_peer().map(|a| a.to_string()),
             };
             match peer {
                 Ok(peer) => {
-                    let side = match opt(&args, "--side").as_deref() {
+                    let side = match opt(&args, "--side").or(config.side.clone()).as_deref() {
                         Some("right") => Side::Right,
                         _ => Side::Left,
                     };
                     let speed = opt(&args, "--speed")
                         .and_then(|s| s.parse().ok())
+                        .or(config.speed)
                         .unwrap_or(1.0);
-                    host(&peer, side, screen_from_args(&args), speed, warp)
+                    host(&peer, side, screen_from_args(&args, &config), speed, warp)
                 }
                 Err(e) => Err(e),
             }
@@ -153,7 +162,9 @@ fn main() {
                 "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp]\n  \
                  lintas host [ip[:port]] [--side left|right] [--width PX] [--height PX] \
                  [--speed F] [--no-warp]\n\
-                 Without an ip, lintas host looks for a lintas serve on the LAN via mDNS."
+                 Without an ip, lintas host looks for a lintas serve on the LAN via mDNS.\n\
+                 Defaults for any of these can be set in ~/.config/lintas/config.toml \
+                 (see packaging/config.toml.example)."
             );
             std::process::exit(1);
         }
@@ -174,10 +185,14 @@ fn opt(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-fn screen_from_args(args: &[String]) -> Screen {
+fn screen_from_args(args: &[String], config: &config::Config) -> Screen {
     let detected = detect_screen();
-    let w = opt(args, "--width").and_then(|v| v.parse().ok());
-    let h = opt(args, "--height").and_then(|v| v.parse().ok());
+    let w = opt(args, "--width")
+        .and_then(|v| v.parse().ok())
+        .or(config.width);
+    let h = opt(args, "--height")
+        .and_then(|v| v.parse().ok())
+        .or(config.height);
     let s = Screen {
         w: w.unwrap_or(detected.w),
         h: h.unwrap_or(detected.h),
