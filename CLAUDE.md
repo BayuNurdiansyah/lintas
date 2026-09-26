@@ -36,6 +36,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - `serve` presents its cert (`server_config`) and doesn't authenticate the host at all (`with_no_client_auth`). `host` connects with a client config whose certificate verifier (`AcceptAnyServerCert`) skips CA validation but still cryptographically verifies the handshake signature (`rustls::crypto::verify_tls{12,13}_signature`) — a live MITM within the session is still caught, only the "who issued this cert" check is skipped.
 - Trust-on-first-use: `host` computes the SHA-256 fingerprint of the serve's cert (`fingerprint`), derives a 6-digit `pairing_code` from its first 4 bytes, and on first contact with a peer address prompts on stdin ("Does this match the code shown on `<peer>`'s screen? [y/N]") before storing the fingerprint in `~/.local/share/lintas/trusted_peers` (`tls::confirm_pairing`/`remember`/`check`). `serve` prints its own pairing code once at startup so the two can be compared by eye.
 - If a peer's fingerprint ever differs from what's on file (`Trust::Changed`), the connection is refused with an explicit error rather than silently re-pairing — the user has to delete the stale entry from `trusted_peers` to re-pair intentionally.
+- **Critical ordering constraint, learned the hard way**: pairing a new peer can block on a stdin prompt (`confirm_pairing`'s `interactive` path). `host` must always finish its first `connect(true)` *before* it grabs any input device. Once devices are grabbed (`EVIOCGRAB`), the keyboard driving that very terminal is captured too — a stdin prompt at that point can never be answered and freezes all input on the machine (mouse and keyboard both dead) until a hard reboot. `Host::connect` takes an `interactive` flag for this reason: `true` only for the pre-grab call in `host()`; `go_remote()`'s reconnect always passes `false` and fails closed (no prompt) if the peer isn't already paired.
 - `Host.remote` and the per-connection `serve` socket are `tls::ClientStream`/`tls::ServerStream` (`rustls::StreamOwned<Connection, TcpStream>`), which own the socket and implement `Read`/`Write` directly — used as a drop-in replacement for the old raw `TcpStream` everywhere else in the code.
 - Unit tests in `src/tls.rs` cover a real loopback TLS handshake (fingerprint match, encrypted round-trip) plus fingerprint/pairing-code sanity — run with `cargo test --release`, also wired into CI.
 
@@ -48,14 +49,15 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 ## Status
 
 - Done and tested on real hardware (CachyOS 2-monitor host + Kali laptop serve): hotkey switching, edge switching back and forth, and cursor height + virtual tablet placement all work correctly, including landing on the right monitor on the 2-monitor host.
-- TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build, but **not yet exercised on real hardware across the two machines** — next session should pair the laptop and PC for real, confirm the pairing-code prompt and stored trust behave as expected end to end, then check this off.
+- TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
+- Real-hardware test of pairing hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). **Still needs a real-hardware re-test** to confirm the fix actually resolves it end to end.
 - mDNS auto-discovery from Phase 2 is not started yet.
 
 ## Roadmap
 
 1. ~~Verify/fix cursor placement on my setup.~~ Done, confirmed working.
 2. Phase 2 (current):
-   - [x] Encryption (TLS) + 6-digit pairing code — implemented, needs a real-hardware pairing test.
+   - [x] Encryption (TLS) + 6-digit pairing code — implemented; fixed a pairing-caused input freeze (see Status), needs a real-hardware re-test.
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
    - [ ] mDNS auto-discovery — not started.
 3. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).

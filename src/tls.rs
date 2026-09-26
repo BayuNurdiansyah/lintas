@@ -230,11 +230,14 @@ pub fn remember(peer: &str, fp: &[u8; 32]) -> io::Result<()> {
     save_trust(&entries)
 }
 
-/// Checks a just-connected peer's certificate against the trust store,
-/// pairing interactively on first contact. Returns an error (refusing the
-/// connection) if the user declines, or if the peer's fingerprint changed
-/// since it was last trusted.
-pub fn confirm_pairing(peer: &str, fp: &[u8; 32]) -> io::Result<()> {
+/// Checks a just-connected peer's certificate against the trust store.
+///
+/// `interactive` must only be true when it's safe to block on a stdin
+/// prompt — i.e. before input devices are grabbed. Once grabbed, the
+/// keyboard driving this same terminal is captured too, so a prompt could
+/// never be answered and would hang the whole machine's input; in that case
+/// an unpaired or changed peer is refused outright instead of prompting.
+pub fn confirm_pairing(peer: &str, fp: &[u8; 32], interactive: bool) -> io::Result<()> {
     match check(peer, fp) {
         Trust::Known => Ok(()),
         Trust::Changed => Err(io::Error::new(
@@ -245,6 +248,14 @@ pub fn confirm_pairing(peer: &str, fp: &[u8; 32]) -> io::Result<()> {
                  else is answering on that address). If you're sure it's expected, remove its \
                  entry from {} and reconnect to re-pair.",
                 trust_path().display()
+            ),
+        )),
+        Trust::New if !interactive => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{peer} is not paired yet, and input devices are already grabbed so it can't \
+                 be paired interactively now. Run `lintas host {peer}` once by itself, confirm \
+                 the pairing code, then start it normally.",
             ),
         )),
         Trust::New => {

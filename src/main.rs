@@ -449,7 +449,11 @@ impl Host {
         self.flush()
     }
 
-    fn connect(&mut self) -> bool {
+    /// Connect to the peer, pairing over TLS. `interactive` must only be
+    /// true before input devices are grabbed: pairing a new peer can prompt
+    /// on stdin, and once devices are grabbed the keyboard driving that
+    /// terminal is captured too, so the prompt could never be answered.
+    fn connect(&mut self, interactive: bool) -> bool {
         if self.remote.is_some() {
             return true;
         }
@@ -474,7 +478,7 @@ impl Host {
             let fp = tls::peer_fingerprint(&s.conn).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "peer sent no certificate")
             })?;
-            tls::confirm_pairing(&self.peer.to_string(), &fp)?;
+            tls::confirm_pairing(&self.peer.to_string(), &fp, interactive)?;
             let mut b = [0u8; 8];
             s.read_exact(&mut b)?;
             let (t, h, w) = decode(&b);
@@ -511,7 +515,8 @@ impl Host {
     }
 
     fn go_remote(&mut self) -> io::Result<bool> {
-        if self.on_remote || !self.connect() {
+        // Devices are grabbed by the time this runs, so never prompt here.
+        if self.on_remote || !self.connect(false) {
             return Ok(false);
         }
         self.release_sent()?;
@@ -624,6 +629,35 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
     let local = make_vdev(&format!("{VDEV_PREFIX}-local"))?;
     let placer = Placer::new(&format!("{VDEV_PREFIX}-local-placer"), warp);
     let tls_config = tls::client_config()?;
+
+    let mut h = Host {
+        local,
+        placer,
+        remote: None,
+        tls_config,
+        peer: peer_addr,
+        side,
+        speed,
+        host: screen,
+        remote_screen: Screen {
+            w: 1920.0,
+            h: 1080.0,
+        },
+        on_remote: false,
+        lx: screen.w / 2.0,
+        ly: screen.h / 2.0,
+        rx: 0.0,
+        ry: 0.0,
+        held: HashSet::new(),
+        sent: HashSet::new(),
+        out: Vec::new(),
+        last_try: None,
+    };
+    // Connect (and pair, if needed) before grabbing any input device: pairing
+    // can prompt on stdin, and once devices are grabbed the keyboard for this
+    // very terminal is captured too, so the prompt could never be answered.
+    h.connect(true);
+
     // Give the user time to release Enter from the terminal before grabbing
     thread::sleep(Duration::from_millis(600));
 
@@ -664,32 +698,6 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
             "no readable input devices",
         ));
     }
-
-    let mut h = Host {
-        local,
-        placer,
-        remote: None,
-        tls_config,
-        peer: peer_addr,
-        side,
-        speed,
-        host: screen,
-        remote_screen: Screen {
-            w: 1920.0,
-            h: 1080.0,
-        },
-        on_remote: false,
-        lx: screen.w / 2.0,
-        ly: screen.h / 2.0,
-        rx: 0.0,
-        ry: 0.0,
-        held: HashSet::new(),
-        sent: HashSet::new(),
-        out: Vec::new(),
-        last_try: None,
-    };
-    // Connect up front so the first crossing is instant; retried at the edge if this fails
-    h.connect();
 
     let dir = if side == Side::Left { "left" } else { "right" };
     println!("Ready. Push the mouse past the {dir} edge to switch to {peer}.");
