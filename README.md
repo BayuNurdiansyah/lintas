@@ -9,6 +9,7 @@ Share one mouse and keyboard between Linux machines over your LAN. Push the curs
 - **Keeps your cursor height.** The cursor enters the other machine at the same relative height it left.
 - **Minimal setup.** One binary, one permission script, no config file.
 - **Encrypted.** Traffic is TLS-encrypted. There's no certificate authority: each machine generates its own self-signed cert, and the first connection to a new peer is confirmed with a 6-digit pairing code shown on both screens (trust-on-first-use, remembered afterwards).
+- **Clipboard sync.** Copying text on either machine makes it available on the other, over the same encrypted connection.
 
 > Status: **alpha**.
 
@@ -72,8 +73,8 @@ To autostart on the serve side, see `packaging/lintas-serve.service`. To autosta
 - [x] Pairing code, encryption (TLS)
 - [x] systemd autostart on both ends
 - [x] Auto-discovery (mDNS)
+- [x] Clipboard sync
 - [ ] Settings UI for layout + tray icon
-- [ ] Clipboard sync
 - [ ] Touchpad capture on the host
 - [ ] More than two machines
 

@@ -47,6 +47,17 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - Falls back cleanly: `lintas host <ip>` still works exactly as before, unaffected by discovery. If nothing is found, the error suggests using an explicit IP.
 - Manually tested end to end on this machine: `serve` advertised correctly (confirmed via `avahi-browse`), `host` discovered it, listed multiple resolved addresses when more than one interface answered, and after picking one, paired and connected successfully with the pairing code matching what `serve` printed.
 
+### Clipboard sync (src/clipboard.rs)
+
+- Piggybacks on the same TLS connection as input events, using a new control message `T_CLIP` (`0xFFF2`, defined in `src/main.rs`): an ordinary 8-byte frame whose `value` is the byte length of UTF-8 text that follows *raw* on the wire right after it (not itself chunked into 8-byte frames, since clipboard text can be much longer).
+- Uses `arboard` (default features + `wayland-data-control`) so the same binary handles X11, XWayland, and native wlroots Wayland clipboards (`arboard::Clipboard::new()` figures out which at runtime); if none is available (e.g. no display), clipboard sync just quietly does nothing rather than erroring out.
+- `clipboard::ClipSync` polls the local clipboard at most every 500ms (`poll_and_send`) and only sends when the content actually changed, remembering the last text it sent *or* received (`last`) so a synced value doesn't bounce back and forth forever. Payloads over 1 MiB are dropped rather than sent.
+- **Protocol/architecture change this required**: neither side previously read from the connection except reactively (`serve`'s loop blocked on `read_exact`; `host` never read after the initial hello at all). Clipboard needs both sides to *periodically* check for outgoing changes and *receive* pushes from the other side without waiting for real input activity. Fixed by:
+  - `FrameReader` (in `src/main.rs`): reassembles the fixed 8-byte frames from a stream that's read with a short timeout, without losing a partial frame across timeout boundaries (a fresh `read_exact` per call would have thrown away any bytes already read once a timeout hit mid-frame).
+  - Both `serve`'s per-connection socket and `host`'s `remote` socket now use a `POLL_INTERVAL` (200ms) read timeout instead of blocking indefinitely (`serve`) or not being read at all (`host`). `serve`'s loop calls `clip.poll_and_send` on every timeout tick; `host` gained `Host::service_clipboard`, called both on its own `POLL_INTERVAL` timeout tick and after every flushed batch of real input, from a `loop { rx.recv_timeout(...) }` that replaced the old blocking `for evs in rx`.
+  - `clipboard::read_exact_patient` (payload reads) and `FrameReader::poll` (header reads) both treat `WouldBlock`/`TimedOut` as "keep waiting", never as a real error — only an actual EOF/disconnect ends the loop.
+- Manually smoke-tested on this machine (loopback `serve`+`host`, real device grab briefly under a `timeout` guard): connects, exchanges input, and disconnects cleanly with no hangs or panics. Meaningful clipboard *content* propagation (i.e. different clipboards on each side) still needs a real test across the laptop and PC — a single-machine loopback test shares one system clipboard, so it can't show a value actually crossing over.
+
 ## My setup
 
 - Host: CachyOS PC with 2 monitors.
@@ -59,17 +70,19 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
 - Real-hardware test of pairing initially hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). Re-tested on the real laptop + PC setup and confirmed working: pairing prompt answerable, no freeze.
 - mDNS auto-discovery (see `src/discover.rs` above) is implemented and tested on this machine (single-machine loopback + local interface), but **not yet tested across the real laptop + PC pair on the actual LAN**.
-- Phase 2 is functionally complete; only real cross-machine testing of mDNS discovery and of the systemd unit files remains.
+- Clipboard sync (see `src/clipboard.rs` above) is implemented, compiles clean, passes clippy, and was smoke-tested for stability (no crashes/hangs), but **not yet verified to actually carry different clipboard content between the two real machines**.
+- Phase 2 is functionally complete; what remains everywhere above is real cross-machine testing (systemd units, mDNS discovery, and now clipboard content) rather than more code.
 
 ## Roadmap
 
 1. ~~Verify/fix cursor placement on my setup.~~ Done, confirmed working.
-2. Phase 2:
-   - [x] Encryption (TLS) + 6-digit pairing code — implemented and confirmed working on real hardware (see Status for the freeze bug that got fixed along the way).
+2. Phase 2 — functionally complete, real cross-machine testing pending:
+   - [x] Encryption (TLS) + 6-digit pairing code — confirmed working on real hardware (see Status for the freeze bug that got fixed along the way).
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
    - [x] mDNS auto-discovery — implemented, tested on one machine, needs a real cross-machine test (laptop discovering the PC or vice versa).
-3. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).
-4. Later: clipboard sync, touchpad capture on host, more than two machines, AUR/AppImage packaging.
+3. Clipboard sync — implemented (`src/clipboard.rs`), needs a real cross-machine content test.
+4. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).
+5. Later: touchpad capture on host, more than two machines, AUR/AppImage packaging.
 
 ## Rules
 

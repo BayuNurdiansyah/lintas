@@ -29,6 +29,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod clipboard;
 mod discover;
 mod tls;
 
@@ -42,15 +43,64 @@ const SLAM: i32 = 100_000;
 const ABS_MAX: i32 = 65_535;
 /// Fixed-point scale for sending the vertical position as a ratio.
 const RATIO_SCALE: f64 = 1_000_000.0;
+/// How often the read side polls for new frames when there's nothing to
+/// read, so clipboard sync (and, on `host`, incoming frames in general) get
+/// a chance to run without waiting for actual input events.
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 // Control messages, outside the range of real evdev event types.
 /// serve -> host. code = screen height, value = screen width.
 const T_HELLO: u16 = 0xFFF0;
 /// host -> serve. code = entry edge (0 = right, 1 = left), value = y ratio.
 const T_ENTER: u16 = 0xFFF1;
+/// Either direction. code = unused, value = length of the UTF-8 clipboard
+/// text that immediately follows this frame on the wire (not itself framed).
+const T_CLIP: u16 = 0xFFF2;
 
 /// A raw input event on the wire: (type, code, value).
 type Ev = (u16, u16, i32);
+
+/// Reassembles fixed 8-byte frames from a stream that may be polled with a
+/// read timeout: a timeout preserves whatever partial frame was already
+/// read, instead of losing it like a fresh `read_exact` call would.
+#[derive(Default)]
+struct FrameReader {
+    buf: [u8; 8],
+    filled: usize,
+}
+
+impl FrameReader {
+    /// `Ok(None)` means "no complete frame yet" (e.g. the read timed out);
+    /// call again later. `Err` means the connection is actually gone.
+    fn poll(&mut self, stream: &mut impl Read) -> io::Result<Option<[u8; 8]>> {
+        loop {
+            match stream.read(&mut self.buf[self.filled..]) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed",
+                    ))
+                }
+                Ok(n) => {
+                    self.filled += n;
+                    if self.filled == self.buf.len() {
+                        self.filled = 0;
+                        return Ok(Some(self.buf));
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Ok(None)
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Side {
@@ -278,7 +328,7 @@ fn to_input(evs: &[Ev]) -> Vec<InputEvent> {
         .collect()
 }
 
-fn encode(buf: &mut Vec<u8>, (t, c, v): Ev) {
+pub(crate) fn encode(buf: &mut Vec<u8>, (t, c, v): Ev) {
     buf.extend_from_slice(&t.to_be_bytes());
     buf.extend_from_slice(&c.to_be_bytes());
     buf.extend_from_slice(&v.to_be_bytes());
@@ -340,12 +390,26 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
             continue;
         }
         println!("Host connected: {peer:?}");
+        let _ = s.sock.set_read_timeout(Some(POLL_INTERVAL));
 
+        let mut clip = clipboard::ClipSync::new();
+        let mut framer = FrameReader::default();
         let mut pressed: HashSet<u16> = HashSet::new();
         let mut batch: Vec<Ev> = Vec::new();
-        let mut buf = [0u8; 8];
-        while s.read_exact(&mut buf).is_ok() {
+        loop {
+            let buf = match framer.poll(&mut s) {
+                Ok(Some(buf)) => buf,
+                Ok(None) => {
+                    clip.poll_and_send(&mut s)?;
+                    continue;
+                }
+                Err(_) => break,
+            };
             let (t, c, v) = decode(&buf);
+            if t == T_CLIP {
+                clip.receive(&mut s, v.max(0) as usize)?;
+                continue;
+            }
             if t == T_ENTER {
                 // Put the cursor on the entry edge, at the same height it left the host
                 let fx = if c == 0 { 1.0 } else { 0.0 };
@@ -357,6 +421,7 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
                     vdev.emit(&to_input(&batch))?;
                     batch.clear();
                 }
+                clip.poll_and_send(&mut s)?;
                 continue;
             }
             if t == EventType::KEY.0 {
@@ -420,9 +485,39 @@ struct Host {
     sent: HashSet<u16>,
     out: Vec<Ev>,
     last_try: Option<Instant>,
+    clip: clipboard::ClipSync,
+    in_framer: FrameReader,
 }
 
 impl Host {
+    /// Reads any pending frames from the remote (currently just clipboard
+    /// updates) and pushes local clipboard changes out, without blocking.
+    fn service_clipboard(&mut self) -> io::Result<()> {
+        if self.remote.is_none() {
+            return Ok(());
+        }
+        let poll_result = self.in_framer.poll(self.remote.as_mut().unwrap());
+        match poll_result {
+            Ok(Some(buf)) => {
+                let (t, _c, v) = decode(&buf);
+                if t == T_CLIP {
+                    self.clip
+                        .receive(self.remote.as_mut().unwrap(), v.max(0) as usize)?;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                eprintln!("Lost connection to remote, back to local.");
+                self.remote = None;
+                self.on_remote = false;
+                self.sent.clear();
+                self.in_framer = FrameReader::default();
+                return Ok(());
+            }
+        }
+        self.clip.poll_and_send(self.remote.as_mut().unwrap())
+    }
+
     /// Deliver buffered events to the active target.
     fn flush(&mut self) -> io::Result<()> {
         if self.out.is_empty() {
@@ -508,7 +603,9 @@ impl Host {
                     "not a lintas server",
                 ));
             }
-            s.sock.set_read_timeout(None)?;
+            // Short timeout: `service_clipboard` polls this without blocking
+            // the main loop while there's no input activity to react to.
+            s.sock.set_read_timeout(Some(POLL_INTERVAL))?;
             Ok((
                 s,
                 Screen {
@@ -525,6 +622,7 @@ impl Host {
                 );
                 self.remote = Some(s);
                 self.remote_screen = screen;
+                self.in_framer = FrameReader::default();
                 true
             }
             Err(e) => {
@@ -672,6 +770,8 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
         sent: HashSet::new(),
         out: Vec::new(),
         last_try: None,
+        clip: clipboard::ClipSync::new(),
+        in_framer: FrameReader::default(),
     };
     // Connect (and pair, if needed) before grabbing any input device: pairing
     // can prompt on stdin, and once devices are grabbed the keyboard for this
@@ -723,7 +823,15 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
     println!("Ready. Push the mouse past the {dir} edge to switch to {peer}.");
     println!("Ctrl+Alt+Shift+Space = manual switch, Ctrl+Alt+Shift+Esc = exit.");
 
-    for evs in rx {
+    loop {
+        let evs = match rx.recv_timeout(POLL_INTERVAL) {
+            Ok(evs) => evs,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                h.service_clipboard()?;
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         for (t, c, v) in evs {
             if t == EventType::KEY.0 {
                 if v == 0 {
@@ -764,6 +872,7 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
             h.out.push((t, c, v));
         }
         h.flush()?;
+        h.service_clipboard()?;
     }
     Ok(())
 }
