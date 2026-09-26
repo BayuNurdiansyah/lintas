@@ -29,6 +29,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod tls;
+
 const DEFAULT_PORT: u16 = 4242;
 const VDEV_PREFIX: &str = "lintas";
 /// How far the mouse must be pushed past an edge before switching.
@@ -283,24 +285,41 @@ fn decode(b: &[u8; 8]) -> Ev {
 fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
     let mut vdev = make_vdev(&format!("{VDEV_PREFIX}-remote"))?;
     let mut placer = Placer::new(&format!("{VDEV_PREFIX}-remote-placer"), warp);
+    let identity = tls::load_or_create_identity()?;
+    let tls_config = tls::server_config(&identity)?;
+    let fp = tls::fingerprint(&identity.cert);
+    println!(
+        "This machine's pairing code: {:06}. A host connecting for the first time \
+         must see the same code before you confirm the pairing.",
+        tls::pairing_code(&fp)
+    );
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     println!("lintas serving on port {port}, waiting for host...");
 
     for stream in listener.incoming() {
-        let mut s = match stream {
+        let tcp = match stream {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Accept failed: {e}");
                 continue;
             }
         };
-        let _ = s.set_nodelay(true);
+        let _ = tcp.set_nodelay(true);
+        let peer = tcp.peer_addr().ok();
+        let conn = match rustls::ServerConnection::new(tls_config.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("TLS setup failed: {e}");
+                continue;
+            }
+        };
+        let mut s = tls::ServerStream::new(conn, tcp);
         let mut hello = Vec::new();
         encode(&mut hello, (T_HELLO, screen.h as u16, screen.w as i32));
         if s.write_all(&hello).is_err() {
             continue;
         }
-        println!("Host connected: {:?}", s.peer_addr().ok());
+        println!("Host connected: {peer:?}");
 
         let mut pressed: HashSet<u16> = HashSet::new();
         let mut batch: Vec<Ev> = Vec::new();
@@ -362,7 +381,8 @@ fn is_input_device(d: &Device) -> bool {
 struct Host {
     local: VirtualDevice,
     placer: Placer,
-    remote: Option<TcpStream>,
+    remote: Option<tls::ClientStream>,
+    tls_config: std::sync::Arc<rustls::ClientConfig>,
     peer: SocketAddr,
     side: Side,
     speed: f64,
@@ -441,10 +461,20 @@ impl Host {
             return false;
         }
         self.last_try = Some(Instant::now());
-        let res = (|| -> io::Result<(TcpStream, Screen)> {
-            let mut s = TcpStream::connect_timeout(&self.peer, Duration::from_millis(500))?;
-            s.set_nodelay(true)?;
-            s.set_read_timeout(Some(Duration::from_secs(1)))?;
+        let res = (|| -> io::Result<(tls::ClientStream, Screen)> {
+            let tcp = TcpStream::connect_timeout(&self.peer, Duration::from_millis(500))?;
+            tcp.set_nodelay(true)?;
+            tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let name = rustls::pki_types::ServerName::try_from(self.peer.ip().to_string())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+            let conn = rustls::ClientConnection::new(self.tls_config.clone(), name)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            let mut s = tls::ClientStream::new(conn, tcp);
+            s.conn.complete_io(&mut s.sock)?;
+            let fp = tls::peer_fingerprint(&s.conn).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "peer sent no certificate")
+            })?;
+            tls::confirm_pairing(&self.peer.to_string(), &fp)?;
             let mut b = [0u8; 8];
             s.read_exact(&mut b)?;
             let (t, h, w) = decode(&b);
@@ -454,7 +484,7 @@ impl Host {
                     "not a lintas server",
                 ));
             }
-            s.set_read_timeout(None)?;
+            s.sock.set_read_timeout(None)?;
             Ok((
                 s,
                 Screen {
@@ -593,6 +623,7 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid peer address"))?;
     let local = make_vdev(&format!("{VDEV_PREFIX}-local"))?;
     let placer = Placer::new(&format!("{VDEV_PREFIX}-local-placer"), warp);
+    let tls_config = tls::client_config()?;
     // Give the user time to release Enter from the terminal before grabbing
     thread::sleep(Duration::from_millis(600));
 
@@ -638,6 +669,7 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
         local,
         placer,
         remote: None,
+        tls_config,
         peer: peer_addr,
         side,
         speed,

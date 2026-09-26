@@ -8,8 +8,9 @@ Share one mouse and keyboard between Linux machines over your LAN. Push the curs
 - **Edge switching without compositor support.** Monitor layout is detected from the kernel (`/sys/class/drm`), so multi-monitor setups work out of the box.
 - **Keeps your cursor height.** The cursor enters the other machine at the same relative height it left.
 - **Minimal setup.** One binary, one permission script, no config file.
+- **Encrypted.** Traffic is TLS-encrypted. There's no certificate authority: each machine generates its own self-signed cert, and the first connection to a new peer is confirmed with a 6-digit pairing code shown on both screens (trust-on-first-use, remembered afterwards).
 
-> Status: **alpha**. Traffic is not encrypted yet, only use it on networks you trust.
+> Status: **alpha**.
 
 ## Install
 
@@ -49,7 +50,11 @@ Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an em
 
 Default port is TCP `4242`. Open it in the firewall of the machine running `serve`.
 
-To autostart on the serve side, see `packaging/lintas-serve.service`.
+### Pairing
+
+The first time a host connects to a serve machine, both sides print a 6-digit pairing code derived from the serve's certificate. Confirm on the host that the codes match, and it's remembered from then on (in `~/.local/share/lintas/trusted_peers`). If a peer's certificate ever changes unexpectedly, the connection is refused instead of silently re-pairing.
+
+To autostart on the serve side, see `packaging/lintas-serve.service`. To autostart on the host side, copy `packaging/lintas-host.service` to `~/.config/systemd/user/`, copy `packaging/lintas-host.env.example` to `~/.config/lintas/lintas-host.env` and fill in `LINTAS_PEER`/`LINTAS_SIDE`, then run `systemctl --user enable --now lintas-host`.
 
 ## How it works
 
@@ -62,7 +67,9 @@ To autostart on the serve side, see `packaging/lintas-serve.service`.
 
 - [x] Forward evdev input to uinput, hotkey switching
 - [x] Edge switching, multi-monitor detection, cursor height preserved
-- [ ] Auto-discovery (mDNS), pairing code, encryption (TLS/QUIC)
+- [x] Pairing code, encryption (TLS)
+- [x] systemd autostart on both ends
+- [ ] Auto-discovery (mDNS)
 - [ ] Settings UI for layout + tray icon
 - [ ] Clipboard sync
 - [ ] Touchpad capture on the host

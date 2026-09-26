@@ -1,0 +1,15 @@
+# Copy to ~/.config/systemd/user/, edit lintas-host.env next to it, then run:
+#   systemctl --user enable --now lintas-host
+[Unit]
+Description=lintas host (send mouse and keyboard to a remote machine)
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/lintas/lintas-host.env
+ExecStart=%h/.local/bin/lintas host ${LINTAS_PEER} --side ${LINTAS_SIDE}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
