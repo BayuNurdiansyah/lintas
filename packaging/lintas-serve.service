@@ -1,6 +1,6 @@
-# Salin ke ~/.config/systemd/user/ lalu: systemctl --user enable --now lintas-serve
+# Copy to ~/.config/systemd/user/ then run: systemctl --user enable --now lintas-serve
 [Unit]
-Description=lintas serve (terima mouse/keyboard dari host)
+Description=lintas serve (receive mouse and keyboard from a host)
 After=graphical-session.target
 
 [Service]

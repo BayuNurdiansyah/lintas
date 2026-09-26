@@ -1,19 +1,27 @@
-//! lintas fase 3: share mouse + keyboard antar Linux, pindah lewat tepi layar.
-//! Capture pakai evdev, inject pakai uinput. Jalan di X11, Wayland, distro apa pun.
+//! lintas: share one mouse and keyboard across Linux machines over LAN.
 //!
-//!   lintas serve [--port N] [--width PX]
-//!   lintas host <ip[:port]> [--side left|right] [--width PX] [--speed F]
+//! Input is captured with evdev and injected with uinput, so it works the same
+//! on X11, any Wayland compositor, and even a bare TTY.
 //!
-//! --side  : posisi device remote relatif ke host (default: left)
-//! --width : total lebar layar dalam piksel (default: deteksi otomatis semua monitor)
-//! --speed : kalibrasi kalau titik pindah terasa terlalu cepat/lambat (default: 1.0)
+//!   lintas serve [--port N] [--width PX] [--height PX] [--no-warp]
+//!   lintas host <ip[:port]> [--side left|right] [--width PX] [--height PX]
+//!                           [--speed F] [--no-warp]
 //!
-//! Hotkey di host:
-//!   Ctrl+Alt+Shift+Space  pindah manual lokal <-> remote
-//!   Ctrl+Alt+Shift+Esc    keluar darurat
+//! --side    : where the remote machine sits relative to the host (default: left)
+//! --width   : total width of all monitors in px (default: auto-detected)
+//! --height  : tallest monitor height in px (default: auto-detected)
+//! --speed   : tune where the edge crossing triggers (default: 1.0)
+//! --no-warp : disable exact cursor placement, only snap to the edge
+//!
+//! Host hotkeys:
+//!   Ctrl+Alt+Shift+Space  switch local <-> remote manually
+//!   Ctrl+Alt+Shift+Esc    emergency exit (releases all input)
 
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
-use evdev::{AttributeSet, Device, EventType, InputEvent, Key, RelativeAxisType};
+use evdev::{
+    AbsInfo, AbsoluteAxisType, AttributeSet, Device, EventType, InputEvent, Key, RelativeAxisType,
+    UinputAbsSetup,
+};
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -23,15 +31,22 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 4242;
 const VDEV_PREFIX: &str = "lintas";
-/// Seberapa jauh mouse harus "didorong" melewati tepi sebelum pindah.
+/// How far the mouse must be pushed past an edge before switching.
 const PUSH: f64 = 25.0;
-/// Gerakan besar untuk menempelkan kursor ke tepi layar (dijepit oleh compositor).
+/// Huge relative motion used to pin the cursor to an edge (the compositor clamps it).
 const SLAM: i32 = 100_000;
+/// Coordinate range of the virtual tablet used for exact cursor placement.
+const ABS_MAX: i32 = 65_535;
+/// Fixed-point scale for sending the vertical position as a ratio.
+const RATIO_SCALE: f64 = 1_000_000.0;
 
-// Pesan kontrol khusus, di luar range tipe event evdev
-const T_HELLO: u16 = 0xFFF0; // serve -> host, value = lebar layar
-const T_ENTER: u16 = 0xFFF1; // host -> serve, value = 0 masuk dari kanan, 1 dari kiri
+// Control messages, outside the range of real evdev event types.
+/// serve -> host. code = screen height, value = screen width.
+const T_HELLO: u16 = 0xFFF0;
+/// host -> serve. code = entry edge (0 = right, 1 = left), value = y ratio.
+const T_ENTER: u16 = 0xFFF1;
 
+/// A raw input event on the wire: (type, code, value).
 type Ev = (u16, u16, i32);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -40,17 +55,21 @@ enum Side {
     Right,
 }
 
+#[derive(Clone, Copy)]
+struct Screen {
+    w: f64,
+    h: f64,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let warp = !args.iter().any(|a| a == "--no-warp");
     let res = match args.get(1).map(|s| s.as_str()) {
         Some("serve") => {
             let port = opt(&args, "--port")
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(DEFAULT_PORT);
-            let width = opt(&args, "--width")
-                .and_then(|w| w.parse().ok())
-                .unwrap_or_else(detect_width);
-            serve(port, width)
+            serve(port, screen_from_args(&args), warp)
         }
         Some("host") if args.len() > 2 && !args[2].starts_with("--") => {
             let mut peer = args[2].clone();
@@ -61,18 +80,16 @@ fn main() {
                 Some("right") => Side::Right,
                 _ => Side::Left,
             };
-            let width = opt(&args, "--width")
-                .and_then(|w| w.parse().ok())
-                .unwrap_or_else(detect_width);
             let speed = opt(&args, "--speed")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1.0);
-            host(&peer, side, width, speed)
+            host(&peer, side, screen_from_args(&args), speed, warp)
         }
         _ => {
             eprintln!(
-                "Pakai:\n  lintas serve [--port N] [--width PX]\n  \
-                 lintas host <ip[:port]> [--side left|right] [--width PX] [--speed F]"
+                "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp]\n  \
+                 lintas host <ip[:port]> [--side left|right] [--width PX] [--height PX] \
+                 [--speed F] [--no-warp]"
             );
             std::process::exit(1);
         }
@@ -80,7 +97,7 @@ fn main() {
     if let Err(e) = res {
         eprintln!("Error: {e}");
         if e.kind() == io::ErrorKind::PermissionDenied {
-            eprintln!("Jalankan packaging/install.sh lalu login ulang.");
+            eprintln!("Run packaging/install.sh, then log out and back in.");
         }
         std::process::exit(1);
     }
@@ -93,10 +110,23 @@ fn opt(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-/// Jumlahkan lebar semua monitor yang terhubung, dibaca dari kernel (DRM).
-/// Tidak tergantung X11/Wayland/compositor.
-fn detect_width() -> u32 {
-    let mut total = 0;
+fn screen_from_args(args: &[String]) -> Screen {
+    let detected = detect_screen();
+    let w = opt(args, "--width").and_then(|v| v.parse().ok());
+    let h = opt(args, "--height").and_then(|v| v.parse().ok());
+    let s = Screen {
+        w: w.unwrap_or(detected.w),
+        h: h.unwrap_or(detected.h),
+    };
+    println!("Screen: {}x{} px", s.w, s.h);
+    s
+}
+
+/// Detect the desktop size from the kernel (DRM), independent of X11/Wayland.
+/// Assumes monitors are placed side by side: widths are summed, the tallest
+/// height is used.
+fn detect_screen() -> Screen {
+    let (mut w, mut h) = (0u32, 0u32);
     if let Ok(rd) = std::fs::read_dir("/sys/class/drm") {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
@@ -108,26 +138,38 @@ fn detect_width() -> u32 {
             if read("status").trim() != "connected" || read("enabled").trim() == "disabled" {
                 continue;
             }
-            if let Some(w) = read("modes")
-                .lines()
-                .next()
-                .and_then(|m| m.split('x').next())
-                .and_then(|w| w.parse::<u32>().ok())
-            {
-                println!("Monitor {name}: lebar {w}px");
-                total += w;
+            // First line of `modes` is the preferred mode, e.g. "2560x1440"
+            let modes = read("modes");
+            let Some(mode) = modes.lines().next() else {
+                continue;
+            };
+            let mut parts = mode.split('x');
+            let mw = parts.next().and_then(|v| v.parse::<u32>().ok());
+            let mh = parts.next().and_then(|v| {
+                let digits: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+                digits.parse::<u32>().ok()
+            });
+            if let (Some(mw), Some(mh)) = (mw, mh) {
+                println!("Monitor {name}: {mw}x{mh}");
+                w += mw;
+                h = h.max(mh);
             }
         }
     }
-    if total == 0 {
-        println!("Monitor tidak terdeteksi, pakai 1920px (atur dengan --width)");
-        1920
-    } else {
-        total
+    if w == 0 || h == 0 {
+        println!("No monitor detected, assuming 1920x1080 (override with --width/--height)");
+        return Screen {
+            w: 1920.0,
+            h: 1080.0,
+        };
+    }
+    Screen {
+        w: w as f64,
+        h: h as f64,
     }
 }
 
-/// Virtual device dengan semua tombol + sumbu relatif mouse.
+/// Virtual keyboard + relative mouse that can emit any key or button.
 fn make_vdev(name: &str) -> io::Result<VirtualDevice> {
     let mut keys = AttributeSet::<Key>::new();
     for code in 1..0x2ff {
@@ -151,6 +193,71 @@ fn make_vdev(name: &str) -> io::Result<VirtualDevice> {
         .build()
 }
 
+/// Places the cursor at an exact position on the desktop.
+///
+/// Uses a virtual pen tablet: compositors map tablet coordinates onto the
+/// desktop, so a short proximity-in/out moves the cursor there instantly,
+/// without the pointer acceleration that makes relative jumps imprecise.
+/// Falls back to snapping the cursor to an edge when disabled.
+struct Placer {
+    tablet: Option<VirtualDevice>,
+}
+
+impl Placer {
+    fn new(name: &str, enabled: bool) -> Self {
+        if !enabled {
+            return Placer { tablet: None };
+        }
+        let tablet = (|| -> io::Result<VirtualDevice> {
+            let mut keys = AttributeSet::<Key>::new();
+            keys.insert(Key::BTN_TOOL_PEN);
+            keys.insert(Key::BTN_TOUCH);
+            keys.insert(Key::BTN_STYLUS);
+            let axis = |a| UinputAbsSetup::new(a, AbsInfo::new(0, 0, ABS_MAX, 0, 0, 100));
+            VirtualDeviceBuilder::new()?
+                .name(name)
+                .with_keys(&keys)?
+                .with_absolute_axis(&axis(AbsoluteAxisType::ABS_X))?
+                .with_absolute_axis(&axis(AbsoluteAxisType::ABS_Y))?
+                .build()
+        })();
+        match tablet {
+            Ok(t) => Placer { tablet: Some(t) },
+            Err(e) => {
+                eprintln!("Exact cursor placement unavailable ({e}), using edge snap");
+                Placer { tablet: None }
+            }
+        }
+    }
+
+    /// Move the cursor to (fx, fy), both as fractions of the desktop (0.0..=1.0).
+    /// `rel` is the relative device, used for the edge-snap fallback.
+    fn place(&mut self, rel: &mut VirtualDevice, fx: f64, fy: f64) -> io::Result<()> {
+        match self.tablet.as_mut() {
+            Some(t) => {
+                let x = (fx.clamp(0.0, 1.0) * ABS_MAX as f64) as i32;
+                let y = (fy.clamp(0.0, 1.0) * ABS_MAX as f64) as i32;
+                let key = EventType::KEY.0;
+                let abs = EventType::ABSOLUTE.0;
+                t.emit(&to_input(&[
+                    (key, Key::BTN_TOOL_PEN.code(), 1),
+                    (abs, AbsoluteAxisType::ABS_X.0, x),
+                    (abs, AbsoluteAxisType::ABS_Y.0, y),
+                ]))?;
+                t.emit(&to_input(&[(key, Key::BTN_TOOL_PEN.code(), 0)]))
+            }
+            None => {
+                let dir = if fx < 0.5 { -1 } else { 1 };
+                rel.emit(&to_input(&[(
+                    EventType::RELATIVE.0,
+                    RelativeAxisType::REL_X.0,
+                    dir * SLAM,
+                )]))
+            }
+        }
+    }
+}
+
 fn to_input(evs: &[Ev]) -> Vec<InputEvent> {
     evs.iter()
         .map(|&(t, c, v)| InputEvent::new(EventType(t), c, v))
@@ -171,35 +278,29 @@ fn decode(b: &[u8; 8]) -> Ev {
     )
 }
 
-fn slam_x(vdev: &mut VirtualDevice, dir: i32) -> io::Result<()> {
-    vdev.emit(&to_input(&[(
-        EventType::RELATIVE.0,
-        RelativeAxisType::REL_X.0,
-        dir * SLAM,
-    )]))
-}
-
 // ---------------------------------------------------------------- SERVE
 
-fn serve(port: u16, width: u32) -> io::Result<()> {
+fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
     let mut vdev = make_vdev(&format!("{VDEV_PREFIX}-remote"))?;
+    let mut placer = Placer::new(&format!("{VDEV_PREFIX}-remote-placer"), warp);
     let listener = TcpListener::bind(("0.0.0.0", port))?;
-    println!("lintas serve di port {port}, lebar layar {width}px, menunggu host...");
+    println!("lintas serving on port {port}, waiting for host...");
+
     for stream in listener.incoming() {
         let mut s = match stream {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("accept gagal: {e}");
+                eprintln!("Accept failed: {e}");
                 continue;
             }
         };
         let _ = s.set_nodelay(true);
         let mut hello = Vec::new();
-        encode(&mut hello, (T_HELLO, 0, width as i32));
+        encode(&mut hello, (T_HELLO, screen.h as u16, screen.w as i32));
         if s.write_all(&hello).is_err() {
             continue;
         }
-        println!("Host terhubung: {:?}", s.peer_addr().ok());
+        println!("Host connected: {:?}", s.peer_addr().ok());
 
         let mut pressed: HashSet<u16> = HashSet::new();
         let mut batch: Vec<Ev> = Vec::new();
@@ -207,8 +308,9 @@ fn serve(port: u16, width: u32) -> io::Result<()> {
         while s.read_exact(&mut buf).is_ok() {
             let (t, c, v) = decode(&buf);
             if t == T_ENTER {
-                // Tempelkan kursor ke tepi tempat mouse masuk
-                slam_x(&mut vdev, if v == 0 { 1 } else { -1 })?;
+                // Put the cursor on the entry edge, at the same height it left the host
+                let fx = if c == 0 { 1.0 } else { 0.0 };
+                placer.place(&mut vdev, fx, v as f64 / RATIO_SCALE)?;
                 continue;
             }
             if t == EventType::SYNCHRONIZATION.0 {
@@ -227,11 +329,13 @@ fn serve(port: u16, width: u32) -> io::Result<()> {
             }
             batch.push((t, c, v));
         }
+
+        // Host disconnected: release anything still held so no key gets stuck
         let evs: Vec<Ev> = pressed.drain().map(|c| (EventType::KEY.0, c, 0)).collect();
         if !evs.is_empty() {
             vdev.emit(&to_input(&evs))?;
         }
-        println!("Host terputus, menunggu lagi...");
+        println!("Host disconnected, waiting again...");
     }
     Ok(())
 }
@@ -242,7 +346,7 @@ fn is_input_device(d: &Device) -> bool {
     if d.name().is_some_and(|n| n.starts_with(VDEV_PREFIX)) {
         return false;
     }
-    // Touchpad/touchscreen (ABS) tidak di-grab: tetap dipakai normal di device-nya sendiri.
+    // Touchpads/touchscreens (ABS) are left alone and keep working on their own machine.
     if d.supported_absolute_axes()
         .is_some_and(|a| a.iter().next().is_some())
     {
@@ -257,23 +361,29 @@ fn is_input_device(d: &Device) -> bool {
 
 struct Host {
     local: VirtualDevice,
+    placer: Placer,
     remote: Option<TcpStream>,
     peer: SocketAddr,
     side: Side,
     speed: f64,
-    host_w: f64,
-    remote_w: f64,
+    host: Screen,
+    remote_screen: Screen,
     on_remote: bool,
-    /// Posisi horizontal kursor (perkiraan) di host dan di remote
+    /// Estimated cursor position on the host (lx, ly) and on the remote (rx, ry)
     lx: f64,
+    ly: f64,
     rx: f64,
+    ry: f64,
+    /// Physical keys currently held down
     held: HashSet<u16>,
+    /// Keys whose press was delivered to the active target
     sent: HashSet<u16>,
     out: Vec<Ev>,
     last_try: Option<Instant>,
 }
 
 impl Host {
+    /// Deliver buffered events to the active target.
     fn flush(&mut self) -> io::Result<()> {
         if self.out.is_empty() {
             return Ok(());
@@ -281,7 +391,7 @@ impl Host {
         let evs = std::mem::take(&mut self.out);
         if self.on_remote {
             if self.send(&evs, true).is_err() {
-                eprintln!("Koneksi ke remote putus, kembali ke lokal.");
+                eprintln!("Lost connection to remote, back to local.");
                 self.remote = None;
                 self.on_remote = false;
                 self.sent.clear();
@@ -307,7 +417,7 @@ impl Host {
         s.write_all(&buf)
     }
 
-    /// Lepas semua tombol yang masih ditekan di target aktif.
+    /// Release every key still held on the active target.
     fn release_sent(&mut self) -> io::Result<()> {
         self.flush()?;
         let rel: Vec<Ev> = self
@@ -323,7 +433,7 @@ impl Host {
         if self.remote.is_some() {
             return true;
         }
-        // Jangan coba konek terus-terusan tiap gerakan mouse
+        // Don't retry on every single mouse movement
         if self
             .last_try
             .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
@@ -331,31 +441,40 @@ impl Host {
             return false;
         }
         self.last_try = Some(Instant::now());
-        let res = (|| -> io::Result<(TcpStream, f64)> {
+        let res = (|| -> io::Result<(TcpStream, Screen)> {
             let mut s = TcpStream::connect_timeout(&self.peer, Duration::from_millis(500))?;
             s.set_nodelay(true)?;
             s.set_read_timeout(Some(Duration::from_secs(1)))?;
             let mut b = [0u8; 8];
             s.read_exact(&mut b)?;
-            let (t, _, w) = decode(&b);
+            let (t, h, w) = decode(&b);
             if t != T_HELLO {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "bukan server lintas",
+                    "not a lintas server",
                 ));
             }
             s.set_read_timeout(None)?;
-            Ok((s, w as f64))
+            Ok((
+                s,
+                Screen {
+                    w: w as f64,
+                    h: (h as f64).max(1.0),
+                },
+            ))
         })();
         match res {
-            Ok((s, w)) => {
-                println!("Terhubung ke {}, lebar layar remote {w}px", self.peer);
+            Ok((s, screen)) => {
+                println!(
+                    "Connected to {}, remote screen {}x{} px",
+                    self.peer, screen.w, screen.h
+                );
                 self.remote = Some(s);
-                self.remote_w = w;
+                self.remote_screen = screen;
                 true
             }
             Err(e) => {
-                eprintln!("Gagal konek ke {}: {e}", self.peer);
+                eprintln!("Could not connect to {}: {e}", self.peer);
                 false
             }
         }
@@ -367,17 +486,20 @@ impl Host {
         }
         self.release_sent()?;
         self.on_remote = true;
-        // Remote di kiri: kursor masuk dari tepi kanan layar remote, dan sebaliknya
-        let (enter, rx) = match self.side {
-            Side::Left => (0, self.remote_w),
+        let fy = (self.ly / self.host.h).clamp(0.0, 1.0);
+        // Remote on the left: the cursor enters through the remote's right edge, and vice versa
+        let (edge, rx) = match self.side {
+            Side::Left => (0, self.remote_screen.w),
             Side::Right => (1, 0.0),
         };
-        if self.send(&[(T_ENTER, 0, enter)], false).is_err() {
+        let msg = (T_ENTER, edge, (fy * RATIO_SCALE) as i32);
+        if self.send(&[msg], false).is_err() {
             self.remote = None;
             self.on_remote = false;
             return Ok(false);
         }
         self.rx = rx;
+        self.ry = fy * self.remote_screen.h;
         println!("-> REMOTE");
         Ok(true)
     }
@@ -388,61 +510,72 @@ impl Host {
         }
         self.release_sent()?;
         self.on_remote = false;
-        // Tempelkan kursor host ke tepi yang berbatasan dengan remote
-        let (dir, lx) = match self.side {
-            Side::Left => (-1, 0.0),
-            Side::Right => (1, self.host_w),
+        let fy = (self.ry / self.remote_screen.h).clamp(0.0, 1.0);
+        // Put the host cursor on the edge facing the remote, at the matching height
+        let (fx, lx) = match self.side {
+            Side::Left => (0.0, 0.0),
+            Side::Right => (1.0, self.host.w),
         };
-        slam_x(&mut self.local, dir)?;
+        self.placer.place(&mut self.local, fx, fy)?;
         self.lx = lx;
-        println!("-> LOKAL");
+        self.ly = fy * self.host.h;
+        println!("-> LOCAL");
         Ok(())
     }
 
-    /// Update posisi horizontal. Return true kalau event ini memicu perpindahan
-    /// (event-nya tidak diteruskan).
+    /// Track horizontal motion. Returns true when this event triggered a
+    /// switch (the event itself is then dropped).
     fn track_x(&mut self, dx: f64) -> io::Result<bool> {
         let dx = dx * self.speed;
         if !self.on_remote {
             self.lx += dx;
             let crossed = match self.side {
                 Side::Left => self.lx < -PUSH,
-                Side::Right => self.lx > self.host_w + PUSH,
+                Side::Right => self.lx > self.host.w + PUSH,
             };
             if crossed && self.go_remote()? {
                 return Ok(true);
             }
-            // Dijepit di dinding supaya perkiraan posisi otomatis sinkron lagi
+            // Clamp at the walls so the estimate resyncs whenever the cursor hits them
             self.lx = match self.side {
                 Side::Left => self
                     .lx
-                    .clamp(if crossed { 0.0 } else { -PUSH }, self.host_w),
-                Side::Right => self.lx.clamp(
-                    0.0,
-                    if crossed {
-                        self.host_w
+                    .clamp(if crossed { 0.0 } else { -PUSH }, self.host.w),
+                Side::Right => {
+                    let max = if crossed {
+                        self.host.w
                     } else {
-                        self.host_w + PUSH
-                    },
-                ),
+                        self.host.w + PUSH
+                    };
+                    self.lx.clamp(0.0, max)
+                }
             };
         } else {
             self.rx += dx;
             let back = match self.side {
-                Side::Left => self.rx > self.remote_w + PUSH,
+                Side::Left => self.rx > self.remote_screen.w + PUSH,
                 Side::Right => self.rx < -PUSH,
             };
             if back {
                 self.go_local()?;
                 return Ok(true);
             }
-            self.rx = self.rx.clamp(-PUSH, self.remote_w + PUSH);
             self.rx = match self.side {
-                Side::Left => self.rx.max(0.0),
-                Side::Right => self.rx.min(self.remote_w),
+                Side::Left => self.rx.clamp(0.0, self.remote_screen.w + PUSH),
+                Side::Right => self.rx.clamp(-PUSH, self.remote_screen.w),
             };
         }
         Ok(false)
+    }
+
+    /// Track vertical motion, clamped to the active screen.
+    fn track_y(&mut self, dy: f64) {
+        let dy = dy * self.speed;
+        if self.on_remote {
+            self.ry = (self.ry + dy).clamp(0.0, self.remote_screen.h);
+        } else {
+            self.ly = (self.ly + dy).clamp(0.0, self.host.h);
+        }
     }
 }
 
@@ -453,13 +586,14 @@ fn hotkey_mods(held: &HashSet<u16>) -> bool {
         && any(Key::KEY_LEFTSHIFT, Key::KEY_RIGHTSHIFT)
 }
 
-fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
+fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::Result<()> {
     let peer_addr = peer
         .to_socket_addrs()?
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "alamat peer tidak valid"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid peer address"))?;
     let local = make_vdev(&format!("{VDEV_PREFIX}-local"))?;
-    // Tunggu sebentar supaya tombol Enter dari terminal sudah dilepas sebelum grab
+    let placer = Placer::new(&format!("{VDEV_PREFIX}-local-placer"), warp);
+    // Give the user time to release Enter from the terminal before grabbing
     thread::sleep(Duration::from_millis(600));
 
     let (tx, rx) = mpsc::channel::<Vec<Ev>>();
@@ -470,14 +604,14 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
         }
         let name = dev.name().unwrap_or("?").to_string();
         if let Err(e) = dev.grab() {
-            eprintln!("Gagal grab {name} ({}): {e}", path.display());
+            eprintln!("Could not grab {name} ({}): {e}", path.display());
             continue;
         }
-        println!("Capture: {name}");
+        println!("Capturing: {name}");
         count += 1;
         let tx = tx.clone();
         thread::spawn(move || {
-            // Berhenti kalau device dicabut (fetch_events error)
+            // Stops when the device is unplugged (fetch_events errors)
             while let Ok(it) = dev.fetch_events() {
                 let evs: Vec<Ev> = it
                     .filter(|e| {
@@ -496,31 +630,38 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
     if count == 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "tidak ada device input yang bisa dibaca",
+            "no readable input devices",
         ));
     }
 
     let mut h = Host {
         local,
+        placer,
         remote: None,
         peer: peer_addr,
         side,
         speed,
-        host_w: width as f64,
-        remote_w: 1920.0,
+        host: screen,
+        remote_screen: Screen {
+            w: 1920.0,
+            h: 1080.0,
+        },
         on_remote: false,
-        lx: width as f64 / 2.0,
+        lx: screen.w / 2.0,
+        ly: screen.h / 2.0,
         rx: 0.0,
+        ry: 0.0,
         held: HashSet::new(),
         sent: HashSet::new(),
         out: Vec::new(),
         last_try: None,
     };
-    h.connect(); // coba konek di awal, kalau gagal dicoba lagi saat mouse ke tepi
+    // Connect up front so the first crossing is instant; retried at the edge if this fails
+    h.connect();
 
-    let arah = if side == Side::Left { "kiri" } else { "kanan" };
-    println!("Siap. Geser mouse ke tepi {arah} layar untuk pindah ke {peer}.");
-    println!("Ctrl+Alt+Shift+Space = pindah manual, Ctrl+Alt+Shift+Esc = keluar.");
+    let dir = if side == Side::Left { "left" } else { "right" };
+    println!("Ready. Push the mouse past the {dir} edge to switch to {peer}.");
+    println!("Ctrl+Alt+Shift+Space = manual switch, Ctrl+Alt+Shift+Esc = exit.");
 
     for evs in rx {
         for (t, c, v) in evs {
@@ -533,7 +674,7 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
                 if v == 1 && hotkey_mods(&h.held) {
                     if c == Key::KEY_ESC.code() {
                         let _ = h.release_sent();
-                        println!("Keluar darurat.");
+                        println!("Emergency exit.");
                         return Ok(());
                     }
                     if c == Key::KEY_SPACE.code() {
@@ -545,13 +686,15 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
                         continue;
                     }
                 }
-                // key-up yang press-nya tidak pernah dikirim ke target ini: buang
+                // Drop key-ups whose press never reached the current target
                 if v == 0 && !h.sent.remove(&c) {
                     continue;
                 }
                 if v == 1 {
                     h.sent.insert(c);
                 }
+            } else if t == EventType::RELATIVE.0 && c == RelativeAxisType::REL_Y.0 {
+                h.track_y(v as f64);
             } else if t == EventType::RELATIVE.0
                 && c == RelativeAxisType::REL_X.0
                 && h.track_x(v as f64)?

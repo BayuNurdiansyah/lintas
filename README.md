@@ -1,74 +1,78 @@
 # lintas
 
-> *Lintas* berarti menyeberang dalam bahasa Indonesia. Move your cursor across machines. Zero config, any compositor.
+> *Lintas* means "to cross" in Indonesian. Move your cursor across machines. Zero config, any compositor.
 
-Share mouse dan keyboard antar komputer Linux lewat LAN. Geser mouse ke tepi layar, kursor pindah ke komputer sebelah.
+Share one mouse and keyboard between Linux machines over your LAN. Push the cursor past the edge of your screen and it continues on the machine next to you.
 
-- **Tidak tergantung desktop.** Jalan di X11, Wayland (KDE, GNOME, Hyprland, Sway), bahkan TTY, karena input dibaca dan diinjeksi langsung di level kernel (evdev + uinput).
-- **Pindah lewat tepi layar tanpa bantuan compositor.** Lebar semua monitor dideteksi otomatis dari kernel (`/sys/class/drm`).
-- **Minim setup.** Satu binary, satu script izin, tanpa file config.
+- **Desktop agnostic.** Works on X11, Wayland (KDE, GNOME, Hyprland, Sway) and even a bare TTY, because input is read and injected at the kernel level (evdev + uinput).
+- **Edge switching without compositor support.** Monitor layout is detected from the kernel (`/sys/class/drm`), so multi-monitor setups work out of the box.
+- **Keeps your cursor height.** The cursor enters the other machine at the same relative height it left.
+- **Minimal setup.** One binary, one permission script, no config file.
 
-> Status: **alpha**. Koneksi belum terenkripsi, pakai hanya di jaringan yang kamu percaya.
+> Status: **alpha**. Traffic is not encrypted yet, only use it on networks you trust.
 
-## Instalasi
+## Install
 
-Butuh Rust (`sudo pacman -S rust` di Arch, atau lewat [rustup](https://rustup.rs) di distro lain).
+Requires Rust (`sudo pacman -S rust` on Arch, or [rustup](https://rustup.rs) elsewhere).
 
 ```bash
-git clone https://github.com/<username>/lintas.git
+git clone https://github.com/BayuNurdiansyah/lintas.git
 cd lintas
-bash packaging/install.sh   # izin akses /dev/input dan /dev/uinput, lalu reboot
+bash packaging/install.sh   # grants access to /dev/input and /dev/uinput, then reboot
 cargo build --release
 cp target/release/lintas ~/.local/bin/
 ```
 
-Lakukan di semua komputer.
+Do this on every machine.
 
-## Pemakaian
+## Usage
 
-Contoh: laptop di kiri, PC di kanan (PC yang punya mouse dan keyboard).
+Example: laptop on the left, desktop PC on the right (the PC owns the mouse and keyboard).
 
 ```bash
-# di laptop
+# on the laptop
 lintas serve
 
-# di PC
-lintas host <ip-laptop> --side left
+# on the PC
+lintas host <laptop-ip> --side left
 ```
 
-| Opsi host | Fungsi |
-|---|---|
-| `--side left\|right` | Posisi komputer remote relatif ke host (default `left`) |
-| `--width PX` | Total lebar monitor, kalau deteksi otomatis meleset (misal karena scaling) |
-| `--speed F` | Kalibrasi titik pindah, misal `0.8` atau `1.3` |
+| Option | Where | Purpose |
+|---|---|---|
+| `--side left\|right` | host | Where the remote machine sits relative to the host (default `left`) |
+| `--width PX` | both | Total width of all monitors, if auto-detection is off (e.g. with scaling) |
+| `--height PX` | both | Height of the tallest monitor, if auto-detection is off |
+| `--speed F` | host | Tune where the crossing triggers, e.g. `0.8` or `1.3` |
+| `--no-warp` | both | Disable exact cursor placement and only snap to the edge |
 
-Hotkey: `Ctrl+Alt+Shift+Space` pindah manual, `Ctrl+Alt+Shift+Esc` keluar darurat.
+Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an emergency exit.
 
-Port default TCP `4242`. Buka di firewall komputer yang menjalankan `serve`.
+Default port is TCP `4242`. Open it in the firewall of the machine running `serve`.
 
-Auto-start di sisi serve: lihat `packaging/lintas-serve.service`.
+To autostart on the serve side, see `packaging/lintas-serve.service`.
 
-## Cara kerja
+## How it works
 
-1. Host meng-grab semua keyboard dan mouse (evdev), lalu meneruskannya ke virtual device lokal atau ke remote.
-2. Posisi horizontal kursor diperkirakan dari gerakan relatif mouse, dan disinkronkan ulang setiap kali kursor mentok di dinding layar.
-3. Saat melewati tepi, host mengirim event ke remote. Remote menginjeksinya lewat uinput dan menempelkan kursor ke tepi masuk.
+1. The host grabs every keyboard and mouse (evdev) and forwards events either to a local virtual device or to the remote.
+2. The cursor position is estimated from relative mouse motion and resynced every time it hits a screen wall.
+3. When the cursor crosses the edge, events go to the remote, which injects them through uinput.
+4. On entry the cursor is placed exactly using a small virtual pen tablet, which avoids pointer acceleration errors. If your compositor places it on the wrong monitor, use `--no-warp`.
 
 ## Roadmap
 
-- [x] Fase 1: forward input evdev ke uinput, pindah dengan hotkey
-- [x] Fase 3: pindah lewat tepi layar, deteksi multi monitor
-- [ ] Fase 2: auto-discovery (mDNS), pairing kode, enkripsi (TLS/QUIC)
-- [ ] Fase 4: UI pengaturan layout + tray icon
-- [ ] Sinkron clipboard
-- [ ] Capture touchpad di sisi host
-- [ ] Lebih dari 2 komputer
+- [x] Forward evdev input to uinput, hotkey switching
+- [x] Edge switching, multi-monitor detection, cursor height preserved
+- [ ] Auto-discovery (mDNS), pairing code, encryption (TLS/QUIC)
+- [ ] Settings UI for layout + tray icon
+- [ ] Clipboard sync
+- [ ] Touchpad capture on the host
+- [ ] More than two machines
 
-## Proyek serupa
+## Similar projects
 
-- [rkvm](https://github.com/htrefil/rkvm): pendekatan evdev + uinput yang sama, sudah TLS, tapi pindah hanya lewat hotkey dan pakai file config.
-- [Lan Mouse](https://github.com/feschber/lan-mouse), [Deskflow](https://github.com/deskflow/deskflow), [Input Leap](https://github.com/input-leap/input-leap): pindah lewat tepi layar, lewat integrasi tiap compositor.
+- [rkvm](https://github.com/htrefil/rkvm): same evdev + uinput approach with TLS, but switches via hotkey only and needs a config file.
+- [Lan Mouse](https://github.com/feschber/lan-mouse), [Deskflow](https://github.com/deskflow/deskflow), [Input Leap](https://github.com/input-leap/input-leap): edge switching through per-compositor integrations.
 
-## Lisensi
+## License
 
 MIT
