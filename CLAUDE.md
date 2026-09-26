@@ -40,6 +40,13 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - `Host.remote` and the per-connection `serve` socket are `tls::ClientStream`/`tls::ServerStream` (`rustls::StreamOwned<Connection, TcpStream>`), which own the socket and implement `Read`/`Write` directly — used as a drop-in replacement for the old raw `TcpStream` everywhere else in the code.
 - Unit tests in `src/tls.rs` cover a real loopback TLS handshake (fingerprint match, encrypted round-trip) plus fingerprint/pairing-code sanity — run with `cargo test --release`, also wired into CI.
 
+### Auto-discovery (src/discover.rs)
+
+- `serve` advertises itself over mDNS (`mdns-sd` crate) as `_lintas._tcp.local.`, instance name = hostname (`discover::advertise`); the `ServiceDaemon` it returns must stay alive for the lifetime of `serve()` — dropping it stops the responder thread. Manually verified with `avahi-browse -r _lintas._tcp`.
+- `lintas host` with no positional `<ip>` (or only flags) browses for `_lintas._tcp.local.` for 3 seconds (`discover::find_peer`), auto-picks if exactly one is found, otherwise numbers them and prompts on stdin. This prompt runs at the same pre-grab point as the pairing prompt, so it's safe by the same reasoning.
+- Falls back cleanly: `lintas host <ip>` still works exactly as before, unaffected by discovery. If nothing is found, the error suggests using an explicit IP.
+- Manually tested end to end on this machine: `serve` advertised correctly (confirmed via `avahi-browse`), `host` discovered it, listed multiple resolved addresses when more than one interface answered, and after picking one, paired and connected successfully with the pairing code matching what `serve` printed.
+
 ## My setup
 
 - Host: CachyOS PC with 2 monitors.
@@ -51,15 +58,16 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - Done and tested on real hardware (CachyOS 2-monitor host + Kali laptop serve): hotkey switching, edge switching back and forth, and cursor height + virtual tablet placement all work correctly, including landing on the right monitor on the 2-monitor host.
 - TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
 - Real-hardware test of pairing initially hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). Re-tested on the real laptop + PC setup and confirmed working: pairing prompt answerable, no freeze.
-- mDNS auto-discovery from Phase 2 is not started yet.
+- mDNS auto-discovery (see `src/discover.rs` above) is implemented and tested on this machine (single-machine loopback + local interface), but **not yet tested across the real laptop + PC pair on the actual LAN**.
+- Phase 2 is functionally complete; only real cross-machine testing of mDNS discovery and of the systemd unit files remains.
 
 ## Roadmap
 
 1. ~~Verify/fix cursor placement on my setup.~~ Done, confirmed working.
-2. Phase 2 (current):
+2. Phase 2:
    - [x] Encryption (TLS) + 6-digit pairing code — implemented and confirmed working on real hardware (see Status for the freeze bug that got fixed along the way).
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
-   - [ ] mDNS auto-discovery — not started.
+   - [x] mDNS auto-discovery — implemented, tested on one machine, needs a real cross-machine test (laptop discovering the PC or vice versa).
 3. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).
 4. Later: clipboard sync, touchpad capture on host, more than two machines, AUR/AppImage packaging.
 

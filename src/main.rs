@@ -29,6 +29,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod discover;
 mod tls;
 
 const DEFAULT_PORT: u16 = 4242;
@@ -73,25 +74,36 @@ fn main() {
                 .unwrap_or(DEFAULT_PORT);
             serve(port, screen_from_args(&args), warp)
         }
-        Some("host") if args.len() > 2 && !args[2].starts_with("--") => {
-            let mut peer = args[2].clone();
-            if !peer.contains(':') {
-                peer = format!("{peer}:{DEFAULT_PORT}");
-            }
-            let side = match opt(&args, "--side").as_deref() {
-                Some("right") => Side::Right,
-                _ => Side::Left,
+        Some("host") => {
+            let peer = if args.len() > 2 && !args[2].starts_with("--") {
+                let mut peer = args[2].clone();
+                if !peer.contains(':') {
+                    peer = format!("{peer}:{DEFAULT_PORT}");
+                }
+                Ok(peer)
+            } else {
+                discover::find_peer().map(|a| a.to_string())
             };
-            let speed = opt(&args, "--speed")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0);
-            host(&peer, side, screen_from_args(&args), speed, warp)
+            match peer {
+                Ok(peer) => {
+                    let side = match opt(&args, "--side").as_deref() {
+                        Some("right") => Side::Right,
+                        _ => Side::Left,
+                    };
+                    let speed = opt(&args, "--speed")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1.0);
+                    host(&peer, side, screen_from_args(&args), speed, warp)
+                }
+                Err(e) => Err(e),
+            }
         }
         _ => {
             eprintln!(
                 "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp]\n  \
-                 lintas host <ip[:port]> [--side left|right] [--width PX] [--height PX] \
-                 [--speed F] [--no-warp]"
+                 lintas host [ip[:port]] [--side left|right] [--width PX] [--height PX] \
+                 [--speed F] [--no-warp]\n\
+                 Without an ip, lintas host looks for a lintas serve on the LAN via mDNS."
             );
             std::process::exit(1);
         }
@@ -294,6 +306,14 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
         tls::pairing_code(&fp)
     );
     let listener = TcpListener::bind(("0.0.0.0", port))?;
+    // Kept alive for the rest of this function: dropping it stops advertising.
+    let _mdns = match discover::advertise(port) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!("mDNS advertising unavailable ({e}), host will need the IP directly.");
+            None
+        }
+    };
     println!("lintas serving on port {port}, waiting for host...");
 
     for stream in listener.incoming() {

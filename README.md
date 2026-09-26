@@ -36,6 +36,8 @@ lintas serve
 
 # on the PC
 lintas host <laptop-ip> --side left
+# or, to find it automatically over mDNS instead of typing an IP:
+lintas host --side left
 ```
 
 | Option | Where | Purpose |
@@ -48,7 +50,7 @@ lintas host <laptop-ip> --side left
 
 Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an emergency exit.
 
-Default port is TCP `4242`. Open it in the firewall of the machine running `serve`.
+Default port is TCP `4242`. Open it in the firewall of the machine running `serve`, along with UDP `5353` (mDNS) on both machines if you want auto-discovery.
 
 ### Pairing
 
@@ -69,7 +71,7 @@ To autostart on the serve side, see `packaging/lintas-serve.service`. To autosta
 - [x] Edge switching, multi-monitor detection, cursor height preserved
 - [x] Pairing code, encryption (TLS)
 - [x] systemd autostart on both ends
-- [ ] Auto-discovery (mDNS)
+- [x] Auto-discovery (mDNS)
 - [ ] Settings UI for layout + tray icon
 - [ ] Clipboard sync
 - [ ] Touchpad capture on the host
