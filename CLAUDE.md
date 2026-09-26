@@ -50,14 +50,14 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 
 - Done and tested on real hardware (CachyOS 2-monitor host + Kali laptop serve): hotkey switching, edge switching back and forth, and cursor height + virtual tablet placement all work correctly, including landing on the right monitor on the 2-monitor host.
 - TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
-- Real-hardware test of pairing hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). **Still needs a real-hardware re-test** to confirm the fix actually resolves it end to end.
+- Real-hardware test of pairing initially hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). Re-tested on the real laptop + PC setup and confirmed working: pairing prompt answerable, no freeze.
 - mDNS auto-discovery from Phase 2 is not started yet.
 
 ## Roadmap
 
 1. ~~Verify/fix cursor placement on my setup.~~ Done, confirmed working.
 2. Phase 2 (current):
-   - [x] Encryption (TLS) + 6-digit pairing code — implemented; fixed a pairing-caused input freeze (see Status), needs a real-hardware re-test.
+   - [x] Encryption (TLS) + 6-digit pairing code — implemented and confirmed working on real hardware (see Status for the freeze bug that got fixed along the way).
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
    - [ ] mDNS auto-discovery — not started.
 3. Phase 4: settings UI for monitor/device layout + tray icon (Tauri or Slint).
