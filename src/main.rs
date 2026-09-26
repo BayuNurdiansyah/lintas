@@ -239,19 +239,19 @@ fn serve(port: u16, width: u32) -> io::Result<()> {
 // ----------------------------------------------------------------- HOST
 
 fn is_input_device(d: &Device) -> bool {
-    if d.name().map_or(false, |n| n.starts_with(VDEV_PREFIX)) {
+    if d.name().is_some_and(|n| n.starts_with(VDEV_PREFIX)) {
         return false;
     }
     // Touchpad/touchscreen (ABS) tidak di-grab: tetap dipakai normal di device-nya sendiri.
     if d.supported_absolute_axes()
-        .map_or(false, |a| a.iter().next().is_some())
+        .is_some_and(|a| a.iter().next().is_some())
     {
         return false;
     }
-    let kb = d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A));
+    let kb = d.supported_keys().is_some_and(|k| k.contains(Key::KEY_A));
     let mouse = d
         .supported_relative_axes()
-        .map_or(false, |r| r.contains(RelativeAxisType::REL_X));
+        .is_some_and(|r| r.contains(RelativeAxisType::REL_X));
     kb || mouse
 }
 
@@ -326,7 +326,7 @@ impl Host {
         // Jangan coba konek terus-terusan tiap gerakan mouse
         if self
             .last_try
-            .map_or(false, |t| t.elapsed() < Duration::from_secs(2))
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
         {
             return false;
         }
@@ -476,21 +476,19 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
         println!("Capture: {name}");
         count += 1;
         let tx = tx.clone();
-        thread::spawn(move || loop {
-            match dev.fetch_events() {
-                Ok(it) => {
-                    let evs: Vec<Ev> = it
-                        .filter(|e| {
-                            let t = e.event_type();
-                            t == EventType::KEY || t == EventType::RELATIVE
-                        })
-                        .map(|e| (e.event_type().0, e.code(), e.value()))
-                        .collect();
-                    if !evs.is_empty() && tx.send(evs).is_err() {
-                        break;
-                    }
+        thread::spawn(move || {
+            // Berhenti kalau device dicabut (fetch_events error)
+            while let Ok(it) = dev.fetch_events() {
+                let evs: Vec<Ev> = it
+                    .filter(|e| {
+                        let t = e.event_type();
+                        t == EventType::KEY || t == EventType::RELATIVE
+                    })
+                    .map(|e| (e.event_type().0, e.code(), e.value()))
+                    .collect();
+                if !evs.is_empty() && tx.send(evs).is_err() {
+                    break;
                 }
-                Err(_) => break, // device dicabut
             }
         });
     }
@@ -554,10 +552,11 @@ fn host(peer: &str, side: Side, width: u32, speed: f64) -> io::Result<()> {
                 if v == 1 {
                     h.sent.insert(c);
                 }
-            } else if t == EventType::RELATIVE.0 && c == RelativeAxisType::REL_X.0 {
-                if h.track_x(v as f64)? {
-                    continue;
-                }
+            } else if t == EventType::RELATIVE.0
+                && c == RelativeAxisType::REL_X.0
+                && h.track_x(v as f64)?
+            {
+                continue;
             }
             h.out.push((t, c, v));
         }
