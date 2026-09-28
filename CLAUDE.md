@@ -75,7 +75,8 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - Icon is `assets/icons/lintas-64.png`, embedded at compile time (`include_bytes!`) and converted from RGBA to the ARGB byte order the StatusNotifierItem spec wants (`Icon::rotate_right(1)` per pixel). Only one static icon/state for now — no color-coded idle/connected/error variants (those would need separate icon assets that don't exist yet; status is conveyed via the tray's tooltip/menu text instead, e.g. "Connected: 1.2.3.4:4242").
 - Quit's `activate` handler just calls `std::process::exit(0)` rather than coordinating a graceful shutdown across threads — safe for the input-grab concern specifically, since the kernel releases `EVIOCGRAB`'d devices automatically when the process's file descriptors close, abrupt exit or not.
 - Never fails the whole program if the desktop has no tray host: `tray::spawn` logs "Tray icon unavailable" and returns `None`, and every call site treats a missing tray as a no-op.
-- Verified on real hardware (this machine, XFCE): confirmed the `lintas` StatusNotifierItem actually registers with the desktop's `StatusNotifierWatcher` (checked via `busctl --user list` / `dbus-send ... RegisteredStatusNotifierItems`) alongside other real tray items (network applet, etc.). Not yet visually confirmed in the panel itself or status-text-on-connect, since that needs eyes on the actual screen rather than a D-Bus query — worth a quick visual check next session.
+- Verified on real hardware: confirmed the `lintas` StatusNotifierItem registers with the desktop's `StatusNotifierWatcher` (`busctl --user list` / `dbus-send ... RegisteredStatusNotifierItems`), alongside other real tray items.
+- **Bug found on first visual check**: on this machine the actual StatusNotifierHost is `quickshell` (a custom QML-based bar), not a traditional DE panel — registration succeeded but the icon itself didn't render, while every other app's tray icon (network, etc.) did. Root cause: `icon_pixmap` alone (raw ARGB bytes) isn't enough for every host — some minimal/custom SNI implementations (this one included) only resolve icons by name via the freedesktop icon theme, ignoring the pixmap property entirely. Fixed by also implementing `icon_name()` (returns `"lintas"`) and installing the bundled PNGs into `~/.local/share/icons/hicolor/{64,128,256}x{64,128,256}/apps/lintas.png` at every `tray::spawn()` (cheap, idempotent, no install-time step needed) — confirmed working visually afterward. Keep `icon_pixmap` too; it's still the right thing for hosts that *do* support it directly (no icon-theme install needed for those).
 
 ## My setup
 
@@ -104,7 +105,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 3. Clipboard sync — implemented (`src/clipboard.rs`), **confirmed working on real hardware** (content crosses correctly, no mouse lag after the non-blocking-socket fix above).
 4. Phase 4: settings UI for monitor/device layout + tray icon.
    - [x] Config file for defaults (`src/config.rs`) — implemented and verified on this machine.
-   - [x] Tray icon (`--tray`, `src/tray.rs`) — implemented, D-Bus registration confirmed on real hardware, needs a visual on-screen confirmation next session.
+   - [x] Tray icon (`--tray`, `src/tray.rs`) — implemented and confirmed visually working on real hardware (D-Bus registration plus the icon actually rendering, after fixing an icon-theme-lookup vs pixmap issue — see the Tray icon section above).
    - [ ] Full settings GUI — not started; if/when it happens, prefer Slint over Tauri (native Rust, no webview/JS toolchain, fits the single-lightweight-binary rule better).
 5. Later: touchpad capture on host, more than two machines, AUR/AppImage packaging.
 
