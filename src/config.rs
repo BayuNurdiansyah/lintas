@@ -17,6 +17,7 @@ pub struct Config {
     pub speed: Option<f64>,
     pub side: Option<String>,
     pub no_warp: Option<bool>,
+    pub tray: Option<bool>,
     /// `host`'s peer, so `lintas host` alone can work without typing an IP
     /// or relying on mDNS discovery.
     pub peer: Option<String>,
@@ -53,6 +54,7 @@ pub fn load() -> Config {
             "speed" => c.speed = val.parse().ok(),
             "side" => c.side = Some(val.to_string()),
             "no_warp" => c.no_warp = val.parse().ok(),
+            "tray" => c.tray = val.parse().ok(),
             "peer" => c.peer = Some(val.to_string()),
             _ => eprintln!(
                 "Ignoring unknown config key '{key}' in {}",
@@ -61,4 +63,39 @@ pub fn load() -> Config {
         }
     }
     c
+}
+
+/// Writes the config file, replacing whatever was there (used by
+/// `lintas settings`; comments in a hand-edited file won't survive this).
+pub fn save(c: &Config) -> std::io::Result<()> {
+    let path = config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = String::new();
+    if let Some(v) = c.port {
+        out += &format!("port = {v}\n");
+    }
+    if let Some(v) = c.width {
+        out += &format!("width = {v}\n");
+    }
+    if let Some(v) = c.height {
+        out += &format!("height = {v}\n");
+    }
+    if let Some(v) = c.speed {
+        out += &format!("speed = {v}\n");
+    }
+    if let Some(v) = &c.side {
+        out += &format!("side = \"{v}\"\n");
+    }
+    if let Some(v) = c.no_warp {
+        out += &format!("no_warp = {v}\n");
+    }
+    if let Some(v) = c.tray {
+        out += &format!("tray = {v}\n");
+    }
+    if let Some(v) = &c.peer {
+        out += &format!("peer = \"{v}\"\n");
+    }
+    std::fs::write(path, out)
 }

@@ -54,7 +54,7 @@ Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an em
 
 ### Config file
 
-Any of the above can be set as a default instead of a flag, in `~/.config/lintas/config.toml` (copy `packaging/config.toml.example`). A CLI flag always overrides the config file. `host` can also set `peer` there so `lintas host` alone connects without typing an IP or waiting on mDNS.
+Any of the above can be set as a default instead of a flag, in `~/.config/lintas/config.toml` (copy `packaging/config.toml.example`, or edit it with `lintas settings`, a small native window). A CLI flag always overrides the config file. `host` can also set `peer` there so `lintas host` alone connects without typing an IP or waiting on mDNS.
 
 Default port is TCP `4242`, plus UDP `5353` for mDNS discovery — `packaging/install.sh` opens both automatically if ufw or firewalld is active; otherwise open them manually.
 
@@ -80,7 +80,7 @@ To autostart on the serve side, see `packaging/lintas-serve.service`. To autosta
 - [x] Auto-discovery (mDNS)
 - [x] Clipboard sync
 - [x] Tray icon (`--tray`)
-- [ ] Settings UI for layout
+- [x] Settings UI (`lintas settings`) for the config file
 - [ ] Touchpad capture on the host
 - [ ] More than two machines
 

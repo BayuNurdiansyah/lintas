@@ -1,6 +1,6 @@
 # lintas
 
-Share one mouse and keyboard across Linux machines over LAN (like Lan Mouse / Barrier / Deskflow), but zero-config and compositor-agnostic. Repo: github.com/BayuNurdiansyah/lintas. License MIT. Single Rust binary; deps: `evdev` (input), `rustls`/`rcgen`/`ring` (TLS/pairing), `mdns-sd` (discovery), `arboard` (clipboard), `ksni`/`tokio`/`image` (tray icon, `--tray` only).
+Share one mouse and keyboard across Linux machines over LAN (like Lan Mouse / Barrier / Deskflow), but zero-config and compositor-agnostic. Repo: github.com/BayuNurdiansyah/lintas. License MIT. Single Rust binary; deps: `evdev` (input), `rustls`/`rcgen`/`ring` (TLS/pairing), `mdns-sd` (discovery), `arboard` (clipboard), `ksni`/`tokio`/`image` (tray icon, `--tray` only), `slint` (settings GUI, `lintas settings` only).
 
 ## Why it exists
 
@@ -77,6 +77,13 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - Never fails the whole program if the desktop has no tray host: `tray::spawn` logs "Tray icon unavailable" and returns `None`, and every call site treats a missing tray as a no-op.
 - Verified on real hardware: confirmed the `lintas` StatusNotifierItem registers with the desktop's `StatusNotifierWatcher` (`busctl --user list` / `dbus-send ... RegisteredStatusNotifierItems`), alongside other real tray items.
 - **Bug found on first visual check**: on this machine the actual StatusNotifierHost is `quickshell` (a custom QML-based bar), not a traditional DE panel — registration succeeded but the icon itself didn't render, while every other app's tray icon (network, etc.) did. Root cause: `icon_pixmap` alone (raw ARGB bytes) isn't enough for every host — some minimal/custom SNI implementations (this one included) only resolve icons by name via the freedesktop icon theme, ignoring the pixmap property entirely. Fixed by also implementing `icon_name()` (returns `"lintas"`) and installing the bundled PNGs into `~/.local/share/icons/hicolor/{64,128,256}x{64,128,256}/apps/lintas.png` at every `tray::spawn()` (cheap, idempotent, no install-time step needed) — confirmed working visually afterward. Keep `icon_pixmap` too; it's still the right thing for hosts that *do* support it directly (no icon-theme install needed for those).
+- Right-click shows the menu (status + Quit); left-click intentionally does nothing (`ksni`'s default "activate" behavior) — there's no window to raise since this is a background CLI tool. Confirmed this is expected, not a bug, when it came up during testing.
+
+### Settings GUI (src/settings_gui.rs)
+
+- `lintas settings` opens a small native window (Slint, inline `slint::slint!{}` macro — no separate `.slint` file or `build.rs` needed) that edits `~/.config/lintas/config.toml`: it's purely a friendlier editor for the *same* file the CLI already reads (`src/config.rs`), not a separate config system, and not a launcher — it doesn't start `serve`/`host` itself. Fields: `peer`, `side`, `port`, `width`, `height`, `speed`, `no_warp`, `tray` (added a `tray` config key for this, mirroring `--tray`). Load pre-fills from the existing file; Save overwrites the whole file (the hand-rolled config parser doesn't preserve comments across a round trip through the GUI — acceptable since the GUI itself now documents each field inline).
+- **Dependency conflict hit while adding this**: `cargo add slint` with default features pulled its own internal `ksni` dependency (for Slint's own optional `system-tray` feature) built with `zbus/async-io`, which collided with *our* `ksni` dependency (built with `zbus/tokio`, used by `src/tray.rs`) — both are the same `ksni` crate/version, and Cargo unifies its features project-wide, so ksni ended up with both its own `tokio` and `async-io` Cargo features on simultaneously, which is a `compile_error!` inside ksni itself (mutually exclusive executors). Fixed by trimming `slint`'s features in `Cargo.toml` to `default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"]` — explicitly excluding Slint's own `system-tray` (and `accessibility`, which isn't needed either), so the conflicting `ksni`/`zbus/async-io` pull never happens. Our own tray icon (`src/tray.rs`) is unaffected and still uses ksni/tokio directly.
+- Manually verified on real hardware: window opens and renders correctly, editing a field and clicking Save writes a correct `config.toml` (confirmed by reading the file afterward), and the existing `peer`/`side` values a prior session had set were preserved through a load → edit-something-else → save round trip.
 
 ## My setup
 
@@ -106,7 +113,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 4. Phase 4: settings UI for monitor/device layout + tray icon.
    - [x] Config file for defaults (`src/config.rs`) — implemented and verified on this machine.
    - [x] Tray icon (`--tray`, `src/tray.rs`) — implemented and confirmed visually working on real hardware (D-Bus registration plus the icon actually rendering, after fixing an icon-theme-lookup vs pixmap issue — see the Tray icon section above).
-   - [ ] Full settings GUI — not started; if/when it happens, prefer Slint over Tauri (native Rust, no webview/JS toolchain, fits the single-lightweight-binary rule better).
+   - [x] Settings GUI (`lintas settings`, `src/settings_gui.rs`, Slint) — implemented and confirmed working on real hardware: opens, edits, and correctly saves `~/.config/lintas/config.toml`. Scope is a config-file editor, not a monitor/device layout designer with a visual drag-to-arrange picker — that'd be a further iteration if actually wanted.
 5. Later: touchpad capture on host, more than two machines, AUR/AppImage packaging.
 
 ## Rules

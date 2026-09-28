@@ -12,6 +12,12 @@ mdns-sd = "0.21.4"
 rcgen = "0.14.10"
 ring = "0.17.14"
 rustls = { version = "0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
+slint = { version = "1.18.1", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-femtovg",
+    "compat-1-2",
+] }
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread"] }
 
 [profile.release]

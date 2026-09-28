@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 mod clipboard;
 mod config;
 mod discover;
+mod settings_gui;
 mod tls;
 mod tray;
 
@@ -121,8 +122,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let config = config::load();
     let warp = !args.iter().any(|a| a == "--no-warp") && !config.no_warp.unwrap_or(false);
-    let show_tray = args.iter().any(|a| a == "--tray");
+    let show_tray = args.iter().any(|a| a == "--tray") || config.tray.unwrap_or(false);
     let res = match args.get(1).map(|s| s.as_str()) {
+        Some("settings") => settings_gui::run(),
         Some("serve") => {
             let port = opt(&args, "--port")
                 .and_then(|p| p.parse().ok())
@@ -171,10 +173,11 @@ fn main() {
             eprintln!(
                 "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp] [--tray]\n  \
                  lintas host [ip[:port]] [--side left|right] [--width PX] [--height PX] \
-                 [--speed F] [--no-warp] [--tray]\n\
+                 [--speed F] [--no-warp] [--tray]\n  \
+                 lintas settings\n\
                  Without an ip, lintas host looks for a lintas serve on the LAN via mDNS.\n\
                  Defaults for any of these can be set in ~/.config/lintas/config.toml \
-                 (see packaging/config.toml.example)."
+                 (see packaging/config.toml.example), editable with `lintas settings`."
             );
             std::process::exit(1);
         }
