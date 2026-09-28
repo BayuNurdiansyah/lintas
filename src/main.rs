@@ -3,15 +3,16 @@
 //! Input is captured with evdev and injected with uinput, so it works the same
 //! on X11, any Wayland compositor, and even a bare TTY.
 //!
-//!   lintas serve [--port N] [--width PX] [--height PX] [--no-warp]
+//!   lintas serve [--port N] [--width PX] [--height PX] [--no-warp] [--tray]
 //!   lintas host <ip[:port]> [--side left|right] [--width PX] [--height PX]
-//!                           [--speed F] [--no-warp]
+//!                           [--speed F] [--no-warp] [--tray]
 //!
 //! --side    : where the remote machine sits relative to the host (default: left)
 //! --width   : total width of all monitors in px (default: auto-detected)
 //! --height  : tallest monitor height in px (default: auto-detected)
 //! --speed   : tune where the edge crossing triggers (default: 1.0)
 //! --no-warp : disable exact cursor placement, only snap to the edge
+//! --tray    : show a system tray icon with connection status and Quit
 //!
 //! Host hotkeys:
 //!   Ctrl+Alt+Shift+Space  switch local <-> remote manually
@@ -33,6 +34,7 @@ mod clipboard;
 mod config;
 mod discover;
 mod tls;
+mod tray;
 
 const DEFAULT_PORT: u16 = 4242;
 const VDEV_PREFIX: &str = "lintas";
@@ -119,13 +121,14 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let config = config::load();
     let warp = !args.iter().any(|a| a == "--no-warp") && !config.no_warp.unwrap_or(false);
+    let show_tray = args.iter().any(|a| a == "--tray");
     let res = match args.get(1).map(|s| s.as_str()) {
         Some("serve") => {
             let port = opt(&args, "--port")
                 .and_then(|p| p.parse().ok())
                 .or(config.port)
                 .unwrap_or(DEFAULT_PORT);
-            serve(port, screen_from_args(&args, &config), warp)
+            serve(port, screen_from_args(&args, &config), warp, show_tray)
         }
         Some("host") => {
             let peer = if args.len() > 2 && !args[2].starts_with("--") {
@@ -152,16 +155,23 @@ fn main() {
                         .and_then(|s| s.parse().ok())
                         .or(config.speed)
                         .unwrap_or(1.0);
-                    host(&peer, side, screen_from_args(&args, &config), speed, warp)
+                    host(
+                        &peer,
+                        side,
+                        screen_from_args(&args, &config),
+                        speed,
+                        warp,
+                        show_tray,
+                    )
                 }
                 Err(e) => Err(e),
             }
         }
         _ => {
             eprintln!(
-                "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp]\n  \
+                "Usage:\n  lintas serve [--port N] [--width PX] [--height PX] [--no-warp] [--tray]\n  \
                  lintas host [ip[:port]] [--side left|right] [--width PX] [--height PX] \
-                 [--speed F] [--no-warp]\n\
+                 [--speed F] [--no-warp] [--tray]\n\
                  Without an ip, lintas host looks for a lintas serve on the LAN via mDNS.\n\
                  Defaults for any of these can be set in ~/.config/lintas/config.toml \
                  (see packaging/config.toml.example)."
@@ -359,7 +369,8 @@ fn decode(b: &[u8; 8]) -> Ev {
 
 // ---------------------------------------------------------------- SERVE
 
-fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
+fn serve(port: u16, screen: Screen, warp: bool, show_tray: bool) -> io::Result<()> {
+    let tray = show_tray.then(|| tray::spawn("Waiting for host")).flatten();
     let mut vdev = make_vdev(&format!("{VDEV_PREFIX}-remote"))?;
     let mut placer = Placer::new(&format!("{VDEV_PREFIX}-remote-placer"), warp);
     let identity = tls::load_or_create_identity()?;
@@ -405,6 +416,12 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
             continue;
         }
         println!("Host connected: {peer:?}");
+        if let Some(t) = &tray {
+            t.set_status(match peer {
+                Some(p) => format!("Connected: {p}"),
+                None => "Connected".to_string(),
+            });
+        }
         // Non-blocking, not a read timeout: this loop polls on every real
         // event too (not just idle ticks), so even a short *blocking*
         // timeout would stall input forwarding by that long on every event.
@@ -462,6 +479,9 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
             vdev.emit(&to_input(&evs))?;
         }
         println!("Host disconnected, waiting again...");
+        if let Some(t) = &tray {
+            t.set_status("Waiting for host");
+        }
     }
     Ok(())
 }
@@ -509,6 +529,7 @@ struct Host {
     last_try: Option<Instant>,
     clip: clipboard::ClipSync,
     in_framer: FrameReader,
+    tray: Option<tray::TrayHandle>,
 }
 
 impl Host {
@@ -678,6 +699,9 @@ impl Host {
         self.rx = rx;
         self.ry = fy * self.remote_screen.h;
         println!("-> REMOTE");
+        if let Some(t) = &self.tray {
+            t.set_status(format!("Controlling {}", self.peer));
+        }
         Ok(true)
     }
 
@@ -697,6 +721,9 @@ impl Host {
         self.lx = lx;
         self.ly = fy * self.host.h;
         println!("-> LOCAL");
+        if let Some(t) = &self.tray {
+            t.set_status("Local");
+        }
         Ok(())
     }
 
@@ -763,7 +790,15 @@ fn hotkey_mods(held: &HashSet<u16>) -> bool {
         && any(Key::KEY_LEFTSHIFT, Key::KEY_RIGHTSHIFT)
 }
 
-fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::Result<()> {
+fn host(
+    peer: &str,
+    side: Side,
+    screen: Screen,
+    speed: f64,
+    warp: bool,
+    show_tray: bool,
+) -> io::Result<()> {
+    let tray = show_tray.then(|| tray::spawn("Local")).flatten();
     let peer_addr = peer
         .to_socket_addrs()?
         .next()
@@ -796,6 +831,7 @@ fn host(peer: &str, side: Side, screen: Screen, speed: f64, warp: bool) -> io::R
         last_try: None,
         clip: clipboard::ClipSync::new(),
         in_framer: FrameReader::default(),
+        tray,
     };
     // Connect (and pair, if needed) before grabbing any input device: pairing
     // can prompt on stdin, and once devices are grabbed the keyboard for this

@@ -1,6 +1,6 @@
 # lintas
 
-Share one mouse and keyboard across Linux machines over LAN (like Lan Mouse / Barrier / Deskflow), but zero-config and compositor-agnostic. Repo: github.com/BayuNurdiansyah/lintas. License MIT. Single Rust binary; deps: `evdev`, plus `rustls`/`rcgen`/`ring` for the TLS/pairing layer.
+Share one mouse and keyboard across Linux machines over LAN (like Lan Mouse / Barrier / Deskflow), but zero-config and compositor-agnostic. Repo: github.com/BayuNurdiansyah/lintas. License MIT. Single Rust binary; deps: `evdev` (input), `rustls`/`rcgen`/`ring` (TLS/pairing), `mdns-sd` (discovery), `arboard` (clipboard), `ksni`/`tokio`/`image` (tray icon, `--tray` only).
 
 ## Why it exists
 
@@ -68,6 +68,15 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - `peer` lets `lintas host` (no args at all) connect straight to a saved address, skipping both typing an IP and the mDNS discovery prompt — handy combined with the `lintas-host.service` systemd unit, which no longer strictly needs `lintas-host.env`'s `LINTAS_PEER`/`LINTAS_SIDE` if they're set here instead (either mechanism still works).
 - Manually verified on this machine: `width`/`height` from the config file were picked up and overrode auto-detection when no matching CLI flag was passed.
 
+### Tray icon (src/tray.rs)
+
+- `--tray` on either `serve` or `host` shows a StatusNotifierItem tray icon (`ksni` crate, D-Bus-based; works on GNOME/KDE/XFCE with a systray applet — not the older deprecated XEmbed tray protocol). Menu: current status (disabled, informational) + Quit. No "switch now" tray action (the existing Ctrl+Alt+Shift+Space hotkey already covers that; wiring the tray into live `Host` state was extra complexity not worth it for v1).
+- ksni is async-only (built on `zbus`/tokio), but the rest of the codebase is deliberately synchronous. Bridged by running a dedicated single-thread tokio runtime on its own background thread (`tray::spawn`), which sends a `TrayHandle` back over a `std::sync::mpsc` channel once the tray is registered. `TrayHandle::set_status` is a plain blocking call — internally does `tokio::runtime::Handle::block_on(ksni_handle.update(...))` — so `serve`'s and `host`'s main loops can call it with zero async awareness.
+- Icon is `assets/icons/lintas-64.png`, embedded at compile time (`include_bytes!`) and converted from RGBA to the ARGB byte order the StatusNotifierItem spec wants (`Icon::rotate_right(1)` per pixel). Only one static icon/state for now — no color-coded idle/connected/error variants (those would need separate icon assets that don't exist yet; status is conveyed via the tray's tooltip/menu text instead, e.g. "Connected: 1.2.3.4:4242").
+- Quit's `activate` handler just calls `std::process::exit(0)` rather than coordinating a graceful shutdown across threads — safe for the input-grab concern specifically, since the kernel releases `EVIOCGRAB`'d devices automatically when the process's file descriptors close, abrupt exit or not.
+- Never fails the whole program if the desktop has no tray host: `tray::spawn` logs "Tray icon unavailable" and returns `None`, and every call site treats a missing tray as a no-op.
+- Verified on real hardware (this machine, XFCE): confirmed the `lintas` StatusNotifierItem actually registers with the desktop's `StatusNotifierWatcher` (checked via `busctl --user list` / `dbus-send ... RegisteredStatusNotifierItems`) alongside other real tray items (network applet, etc.). Not yet visually confirmed in the panel itself or status-text-on-connect, since that needs eyes on the actual screen rather than a D-Bus query — worth a quick visual check next session.
+
 ## My setup
 
 - Host: CachyOS PC with 2 monitors, wired Ethernet, subnet 192.168.100.x.
@@ -95,7 +104,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 3. Clipboard sync — implemented (`src/clipboard.rs`), **confirmed working on real hardware** (content crosses correctly, no mouse lag after the non-blocking-socket fix above).
 4. Phase 4: settings UI for monitor/device layout + tray icon.
    - [x] Config file for defaults (`src/config.rs`) — implemented and verified on this machine.
-   - [ ] Tray icon — not started.
+   - [x] Tray icon (`--tray`, `src/tray.rs`) — implemented, D-Bus registration confirmed on real hardware, needs a visual on-screen confirmation next session.
    - [ ] Full settings GUI — not started; if/when it happens, prefer Slint over Tauri (native Rust, no webview/JS toolchain, fits the single-lightweight-binary rule better).
 5. Later: touchpad capture on host, more than two machines, AUR/AppImage packaging.
 

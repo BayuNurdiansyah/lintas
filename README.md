@@ -48,6 +48,7 @@ lintas host --side left
 | `--height PX` | both | Height of the tallest monitor, if auto-detection is off |
 | `--speed F` | host | Tune where the crossing triggers, e.g. `0.8` or `1.3` |
 | `--no-warp` | both | Disable exact cursor placement and only snap to the edge |
+| `--tray` | both | Show a system tray icon with connection status and a Quit action (requires a StatusNotifierItem host, e.g. GNOME/KDE/XFCE with a systray applet) |
 
 Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an emergency exit.
 
@@ -78,7 +79,8 @@ To autostart on the serve side, see `packaging/lintas-serve.service`. To autosta
 - [x] systemd autostart on both ends
 - [x] Auto-discovery (mDNS)
 - [x] Clipboard sync
-- [ ] Settings UI for layout + tray icon
+- [x] Tray icon (`--tray`)
+- [ ] Settings UI for layout
 - [ ] Touchpad capture on the host
 - [ ] More than two machines
 

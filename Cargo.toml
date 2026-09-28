@@ -6,10 +6,13 @@ edition = "2021"
 [dependencies]
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 evdev = "0.12"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+ksni = "0.3.6"
 mdns-sd = "0.21.4"
 rcgen = "0.14.10"
 ring = "0.17.14"
 rustls = { version = "0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread"] }
 
 [profile.release]
 opt-level = 3
