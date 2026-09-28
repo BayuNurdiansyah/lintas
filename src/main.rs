@@ -419,6 +419,10 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
                 Ok(Some(buf)) => buf,
                 Ok(None) => {
                     clip.poll_and_send(&mut s)?;
+                    // Non-blocking read returned instantly: without this,
+                    // idle time turns into a 100%-CPU busy loop. 1ms is way
+                    // below anything perceptible as input lag.
+                    thread::sleep(Duration::from_millis(1));
                     continue;
                 }
                 Err(_) => break,
