@@ -8,7 +8,7 @@ Lan Mouse and similar tools are painful to set up on Arch/CachyOS, mostly becaus
 - Capture: evdev, reading `/dev/input/event*`, with `EVIOCGRAB` so input doesn't leak to the host while controlling the remote.
 - Injection: uinput virtual devices.
 
-Works on X11, any Wayland compositor, and TTY. The only requirement is access to `/dev/input` and `/dev/uinput`, handled once by `packaging/install.sh` (udev rule + `input` group + uinput module).
+Works on X11, any Wayland compositor, and TTY. The only requirement is access to `/dev/input` and `/dev/uinput`, handled once by `packaging/install.sh` (udev rule + `input` group + uinput module). That script also opens TCP 4242 + UDP 5353 (mDNS) when it detects an active ufw or firewalld — added after a real cross-machine test failed silently because nothing had ever opened UDP 5353, and firewall config was previously undocumented-and-unautomated entirely. Skips firewall changes (with a manual-instructions message) if neither is active/detected, and never touches raw iptables/nftables directly.
 
 ## Positioning vs similar projects
 
@@ -76,7 +76,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - Done and tested on real hardware (CachyOS 2-monitor host + Kali laptop serve): hotkey switching, edge switching back and forth, and cursor height + virtual tablet placement all work correctly, including landing on the right monitor on the 2-monitor host.
 - TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
 - Real-hardware test of pairing initially hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). Re-tested on the real laptop + PC setup and confirmed working: pairing prompt answerable, no freeze.
-- mDNS auto-discovery (see `src/discover.rs` above) is implemented and tested on this machine (single-machine loopback + local interface), but **not yet tested across the real laptop + PC pair on the actual LAN**.
+- mDNS auto-discovery (see `src/discover.rs` above) is implemented and tested on this machine (single-machine loopback + local interface). First real cross-machine attempt failed with "no lintas serve found" — root cause was UDP 5353 never being open on either machine (firewall setup was undocumented and unautomated at the time), not a code bug. Fixed by adding firewall rules to `install.sh` (see the note under "Why it exists" above). **Still needs a re-test across the real laptop + PC pair** now that the port is actually open.
 - Clipboard sync (see `src/clipboard.rs` above) is implemented, compiles clean, passes clippy, and was smoke-tested for stability (no crashes/hangs), but **not yet verified to actually carry different clipboard content between the two real machines**.
 - Phase 2 is functionally complete; what remains everywhere above is real cross-machine testing (systemd units, mDNS discovery, and now clipboard content) rather than more code.
 

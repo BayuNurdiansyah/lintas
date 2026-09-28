@@ -20,7 +20,7 @@ Requires Rust (`sudo pacman -S rust` on Arch, or [rustup](https://rustup.rs) els
 ```bash
 git clone https://github.com/BayuNurdiansyah/lintas.git
 cd lintas
-bash packaging/install.sh   # grants access to /dev/input and /dev/uinput, then reboot
+bash packaging/install.sh   # grants access to /dev/input and /dev/uinput, opens firewall ports if ufw/firewalld is active, then reboot
 cargo build --release
 cp target/release/lintas ~/.local/bin/
 ```
@@ -55,7 +55,7 @@ Hotkeys: `Ctrl+Alt+Shift+Space` switches manually, `Ctrl+Alt+Shift+Esc` is an em
 
 Any of the above can be set as a default instead of a flag, in `~/.config/lintas/config.toml` (copy `packaging/config.toml.example`). A CLI flag always overrides the config file. `host` can also set `peer` there so `lintas host` alone connects without typing an IP or waiting on mDNS.
 
-Default port is TCP `4242`. Open it in the firewall of the machine running `serve`, along with UDP `5353` (mDNS) on both machines if you want auto-discovery.
+Default port is TCP `4242`, plus UDP `5353` for mDNS discovery — `packaging/install.sh` opens both automatically if ufw or firewalld is active; otherwise open them manually.
 
 ### Pairing
 
