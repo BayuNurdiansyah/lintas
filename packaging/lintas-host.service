@@ -14,6 +14,10 @@ After=graphical-session.target network-online.target
 Wants=network-online.target
 
 [Service]
+# graphical-session.target can fire before monitors/clipboard are actually
+# ready (screen auto-detection and clipboard access can otherwise race and
+# come up wrong/disabled at boot); a short delay avoids that.
+ExecStartPre=/bin/sleep 5
 # EnvironmentFile=%h/.config/lintas/lintas-host.env
 ExecStart=%h/.local/bin/lintas host
 Restart=on-failure

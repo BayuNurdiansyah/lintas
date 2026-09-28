@@ -4,6 +4,10 @@ Description=lintas serve (receive mouse and keyboard from a host)
 After=graphical-session.target
 
 [Service]
+# graphical-session.target can fire before monitors/clipboard are actually
+# ready (screen auto-detection and clipboard access can otherwise race and
+# come up wrong/disabled at boot); a short delay avoids that.
+ExecStartPre=/bin/sleep 5
 ExecStart=%h/.local/bin/lintas serve
 Restart=on-failure
 RestartSec=3
