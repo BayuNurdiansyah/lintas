@@ -46,6 +46,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - `lintas host` with no positional `<ip>` (or only flags) browses for `_lintas._tcp.local.` for 3 seconds (`discover::find_peer`), auto-picks if exactly one is found, otherwise numbers them and prompts on stdin. This prompt runs at the same pre-grab point as the pairing prompt, so it's safe by the same reasoning.
 - Falls back cleanly: `lintas host <ip>` still works exactly as before, unaffected by discovery. If nothing is found, the error suggests using an explicit IP.
 - Manually tested end to end on this machine: `serve` advertised correctly (confirmed via `avahi-browse`), `host` discovered it, listed multiple resolved addresses when more than one interface answered, and after picking one, paired and connected successfully with the pairing code matching what `serve` printed.
+- **Doesn't work across the real laptop + PC pair, and won't without a router change** — see the mDNS roadmap note for the full explanation (they're on different subnets/VLANs; mDNS multicast can't cross that, TCP still can). Not a code bug; `peer` in the config file is the actual way this is used day to day now.
 
 ### Clipboard sync (src/clipboard.rs)
 
@@ -57,7 +58,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
   - Both `serve`'s per-connection socket and `host`'s `remote` socket are now genuinely **non-blocking** (`set_nonblocking(true)`), not "blocking with a short read timeout" — `serve`'s loop calls `clip.poll_and_send` whenever `FrameReader::poll` comes back empty; `host` gained `Host::service_clipboard`, called both on its own `POLL_INTERVAL` timeout tick and after every flushed batch of real input, from a `loop { rx.recv_timeout(...) }` that replaced the old blocking `for evs in rx`.
   - `clipboard::read_exact_patient` (payload reads) and `FrameReader::poll` (header reads) both treat `WouldBlock`/`TimedOut` as "keep waiting", never as a real error — only an actual EOF/disconnect ends the loop. `read_exact_patient`'s retry sleeps 1ms per `WouldBlock` to avoid busy-spinning a CPU core while a clipboard payload's remaining bytes arrive (it's only called right after a `T_CLIP` header already promised them).
 - **Severe regression this caused, caught on real hardware**: the first real-machine test made the host's mouse go into "slowmo" so badly it needed a hard reboot. Root cause: `Host::connect` originally set a *read timeout* (`set_read_timeout(Some(POLL_INTERVAL))`, 200ms) on the socket rather than making it non-blocking, on the mistaken assumption that a "timeout" read returns immediately when there's no data. It doesn't — a blocking read with `SO_RCVTIMEO` blocks for up to the *full* timeout duration when nothing arrives. Since `Host::service_clipboard` (which does exactly this read) was called after *every single processed input event batch* — not just on idle ticks — and mouse movement generates many small batches per second, each one now stalled the whole input-forwarding loop by up to 200ms. The backlog compounded faster than it could drain, eventually delaying even the Ctrl+Alt+Shift+Esc emergency-exit hotkey enough to force a hard reboot instead. Fixed by switching both `serve`'s and `host`'s post-handshake sockets to true `set_nonblocking(true)` (an unavailable read now returns `WouldBlock` instantly, no wait at all) — this is also the officially-supported way to drive rustls off a non-blocking transport, not a hack. **Lesson: a socket read "timeout" is not a poll — it still blocks for up to that duration on every call with no data; only real non-blocking mode (or a dedicated I/O thread) is safe to call from a hot per-event loop.**
-- Not yet re-verified on real hardware after this fix — next session should confirm the host's local mouse feels completely normal (no stutter at all) both before and after connecting, then proceed to the clipboard-content and mDNS cross-machine tests below.
+- Re-tested on real hardware after this fix: confirmed working, clipboard content actually crosses between the two real machines with no mouse lag/stutter.
 
 ### Config file (src/config.rs)
 
@@ -68,8 +69,9 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 
 ## My setup
 
-- Host: CachyOS PC with 2 monitors.
-- Serve: laptop running Kali Linux, physically on the LEFT of the PC. Command: `lintas host <laptop-ip> --side left`.
+- Host: CachyOS PC with 2 monitors, wired Ethernet, subnet 192.168.100.x.
+- Serve: laptop running Kali Linux, physically on the LEFT of the PC, WiFi, subnet 192.168.110.x (different subnet/VLAN from the PC — this is why mDNS discovery doesn't work here, see the roadmap note).
+- `peer`/`side` are set in the PC's `~/.config/lintas/config.toml`, so `lintas host` alone connects without typing an IP or relying on mDNS.
 - Laptop touchpad stays local on the laptop (not captured), that's intended.
 
 ## Status
@@ -78,7 +80,7 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 - TLS encryption + pairing code (see `src/tls.rs` above) and systemd autostart for both `serve` and `host` (`packaging/lintas-serve.service`, `packaging/lintas-host.service` + `lintas-host.env.example`) are implemented and pass unit tests / clippy / release build.
 - Real-hardware test of pairing initially hit a serious bug: the host froze all keyboard/mouse input machine-wide (had to hard reboot) because the pairing prompt was asked *after* devices were already grabbed, so the keyboard needed to answer it had already been captured exclusively by lintas. Fixed by moving the first `connect(true)` before the device-grab loop and making all later reconnects non-interactive (see the ordering note in the Encryption section above). Re-tested on the real laptop + PC setup and confirmed working: pairing prompt answerable, no freeze.
 - mDNS auto-discovery (see `src/discover.rs` above) is implemented and tested on this machine (single-machine loopback + local interface). First real cross-machine attempt failed with "no lintas serve found" — root cause was UDP 5353 never being open on either machine (firewall setup was undocumented and unautomated at the time), not a code bug. Fixed by adding firewall rules to `install.sh` (see the note under "Why it exists" above). **Still needs a re-test across the real laptop + PC pair** now that the port is actually open.
-- Clipboard sync (see `src/clipboard.rs` above) caused a severe real-hardware regression (host mouse went unusably laggy, forced a hard reboot) due to a blocking-socket-read mistake in the polling design — see the "Severe regression" note in that section for the full root cause and fix. Fixed, compiles clean, passes clippy, but **not yet re-verified on real hardware** (need to confirm the host's mouse feels normal again, then still verify actual clipboard content crosses between the two real machines, which was never confirmed even before this bug).
+- Clipboard sync (see `src/clipboard.rs` above) caused a severe real-hardware regression (host mouse went unusably laggy, forced a hard reboot) due to a blocking-socket-read mistake in the polling design — see the "Severe regression" note in that section for the full root cause and fix. **Confirmed fixed and working on real hardware**: no mouse lag, and clipboard content actually crosses between the laptop and PC.
 - Phase 2 is functionally complete; what remains everywhere above is real cross-machine testing (systemd units, mDNS discovery, and now clipboard content) rather than more code.
 
 ## Roadmap
@@ -87,8 +89,8 @@ Works on X11, any Wayland compositor, and TTY. The only requirement is access to
 2. Phase 2 — functionally complete, real cross-machine testing pending:
    - [x] Encryption (TLS) + 6-digit pairing code — confirmed working on real hardware (see Status for the freeze bug that got fixed along the way).
    - [x] systemd autostart for `serve` and `host` — implemented, untested on real hardware.
-   - [x] mDNS auto-discovery — implemented, tested on one machine, needs a real cross-machine test (laptop discovering the PC or vice versa).
-3. Clipboard sync — implemented (`src/clipboard.rs`), needs a real cross-machine content test.
+   - [x] mDNS auto-discovery — implemented; cross-machine test found it doesn't work on my actual network, but **not a lintas bug**: the laptop (WiFi) and PC (Ethernet) sit on different subnets/VLANs (192.168.100.x vs 192.168.110.x) via the router, and mDNS multicast has TTL=1 by design so it never crosses a subnet boundary without a router-level "mDNS reflector" feature, which this router doesn't have. TCP itself (port 4242) connects fine across the two subnets — only multicast discovery is affected. No fix planned in code; the documented workaround is setting `peer` in `~/.config/lintas/config.toml` (or `lintas host <ip>` directly), which is unaffected and is what's actually in use now.
+3. Clipboard sync — implemented (`src/clipboard.rs`), **confirmed working on real hardware** (content crosses correctly, no mouse lag after the non-blocking-socket fix above).
 4. Phase 4: settings UI for monitor/device layout + tray icon.
    - [x] Config file for defaults (`src/config.rs`) — implemented and verified on this machine.
    - [ ] Tray icon — not started.
