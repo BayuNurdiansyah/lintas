@@ -1,13 +1,21 @@
-# Copy to ~/.config/systemd/user/, edit lintas-host.env next to it, then run:
+# Copy to ~/.config/systemd/user/, then run:
 #   systemctl --user enable --now lintas-host
+#
+# By default this reads peer/side/etc. from ~/.config/lintas/config.toml
+# (see packaging/config.toml.example) — set `peer` and `side` there.
+#
+# To use environment-variable overrides instead, copy
+# lintas-host.env.example to ~/.config/lintas/lintas-host.env, fill it in,
+# uncomment the EnvironmentFile line below, and change ExecStart to:
+#   ExecStart=%h/.local/bin/lintas host ${LINTAS_PEER} --side ${LINTAS_SIDE}
 [Unit]
 Description=lintas host (send mouse and keyboard to a remote machine)
 After=graphical-session.target network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=%h/.config/lintas/lintas-host.env
-ExecStart=%h/.local/bin/lintas host ${LINTAS_PEER} --side ${LINTAS_SIDE}
+# EnvironmentFile=%h/.config/lintas/lintas-host.env
+ExecStart=%h/.local/bin/lintas host
 Restart=on-failure
 RestartSec=3
 
