@@ -77,8 +77,8 @@ impl ClipSync {
 }
 
 /// Like `read_exact`, but treats a read timeout as "keep waiting" instead
-/// of aborting and losing the bytes already read — the stream may be using
-/// a short read timeout so the caller can poll for other work in between.
+/// of aborting and losing the bytes already read — the stream is
+/// non-blocking, so the caller can poll for other work in between.
 fn read_exact_patient(stream: &mut impl Read, buf: &mut [u8]) -> io::Result<()> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -94,7 +94,13 @@ fn read_exact_patient(stream: &mut impl Read, buf: &mut [u8]) -> io::Result<()> 
                 if matches!(
                     e.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
+                ) =>
+            {
+                // The header already promised this many bytes are coming, so
+                // a short sleep here just avoids busy-spinning a CPU core
+                // while they arrive, without meaningfully adding latency.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             Err(e) => return Err(e),
         }
     }

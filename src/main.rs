@@ -405,7 +405,10 @@ fn serve(port: u16, screen: Screen, warp: bool) -> io::Result<()> {
             continue;
         }
         println!("Host connected: {peer:?}");
-        let _ = s.sock.set_read_timeout(Some(POLL_INTERVAL));
+        // Non-blocking, not a read timeout: this loop polls on every real
+        // event too (not just idle ticks), so even a short *blocking*
+        // timeout would stall input forwarding by that long on every event.
+        let _ = s.sock.set_nonblocking(true);
 
         let mut clip = clipboard::ClipSync::new();
         let mut framer = FrameReader::default();
@@ -618,9 +621,11 @@ impl Host {
                     "not a lintas server",
                 ));
             }
-            // Short timeout: `service_clipboard` polls this without blocking
-            // the main loop while there's no input activity to react to.
-            s.sock.set_read_timeout(Some(POLL_INTERVAL))?;
+            // Non-blocking, not a read timeout: `service_clipboard` polls this
+            // on every real input event too, not just idle ticks, so even a
+            // short *blocking* timeout would stall input forwarding by that
+            // much on every single event.
+            s.sock.set_nonblocking(true)?;
             Ok((
                 s,
                 Screen {
