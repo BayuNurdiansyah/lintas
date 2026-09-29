@@ -59,7 +59,7 @@ lintas skips the display server entirely. It reads raw input straight from the k
 
 ## How it works
 
-1. The machine you control *from* (the **host**) grabs every physical keyboard and mouse with `evdev`, so nothing else on that machine sees that input while it's grabbed.
+1. The machine you control *from* (the **host**) grabs every physical keyboard, mouse, and touchpad with `evdev`, so nothing else on that machine sees that input while it's grabbed.
 2. Events go to a local virtual device while the cursor is local, or over an encrypted connection to the other machine (**serve**) once the cursor crosses an edge.
 3. `serve` injects those events with `uinput`, a virtual keyboard/mouse the kernel treats exactly like a physical one.
 4. Crossing back releases any held keys first, so nothing gets stuck.
@@ -240,7 +240,7 @@ AUR install already places these files, just `systemctl --user enable --now` the
 ## Known limitations
 
 - **mDNS doesn't cross subnets/VLANs.** Multicast networking, not something lintas can fix in software. Use `peer` in the config or a direct address.
-- **No touchpad capture on the host yet.** Stays local to that machine, which is usually what you want.
+- **Touchpad gestures aren't captured, only basic pointer movement and clicks.** Multi-finger scroll/zoom/swipe gestures are handled by your desktop's own driver stack (libinput and friends), which lintas bypasses entirely by design; only single-finger position and physical clicks are forwarded.
 - **Two machines only, for now.** One `serve`, one `host`.
 
 ## Roadmap
@@ -254,7 +254,7 @@ AUR install already places these files, just `systemctl --user enable --now` the
 - [x] System tray icon
 - [x] Settings window
 - [x] AUR package and AppImage
-- [ ] Touchpad capture on the host
+- [x] Touchpad capture on the host (pointer movement and clicks; no multi-finger gestures)
 - [ ] More than two machines
 
 ## License

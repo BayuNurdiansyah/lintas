@@ -20,8 +20,8 @@
 
 use evdev::uinput::{VirtualDevice, VirtualDeviceBuilder};
 use evdev::{
-    AbsInfo, AbsoluteAxisType, AttributeSet, Device, EventType, InputEvent, Key, RelativeAxisType,
-    UinputAbsSetup,
+    AbsInfo, AbsoluteAxisType, AttributeSet, Device, EventType, InputEvent, Key, PropType,
+    RelativeAxisType, UinputAbsSetup,
 };
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
@@ -557,11 +557,27 @@ fn serve(port: u16, screen: Screen, warp: bool, show_tray: bool) -> io::Result<(
 
 // ----------------------------------------------------------------- HOST
 
+/// A touchpad: reports absolute axes, but also sets the kernel's
+/// `INPUT_PROP_POINTER` property, the standard way a touchpad marks itself
+/// as a screen-cursor-driving device. A touchscreen (coordinates map
+/// straight onto its own screen, not meaningful on a different machine)
+/// doesn't set this, so it's left alone by [`is_input_device`] below.
+fn is_touchpad(d: &Device) -> bool {
+    d.supported_absolute_axes()
+        .is_some_and(|a| a.iter().next().is_some())
+        && d.properties().contains(PropType::POINTER)
+}
+
 fn is_input_device(d: &Device) -> bool {
     if d.name().is_some_and(|n| n.starts_with(VDEV_PREFIX)) {
         return false;
     }
-    // Touchpads/touchscreens (ABS) are left alone and keep working on their own machine.
+    if is_touchpad(d) {
+        return true;
+    }
+    // Other ABS devices (touchscreens, drawing tablets) are left alone and
+    // keep working on their own machine; their coordinates only make sense
+    // on the screen they're physically attached to.
     if d.supported_absolute_axes()
         .is_some_and(|a| a.iter().next().is_some())
     {
@@ -932,28 +948,94 @@ fn host(
             continue;
         }
         let name = dev.name().unwrap_or("?").to_string();
+        let touchpad = is_touchpad(&dev);
         if let Err(e) = dev.grab() {
             eprintln!("Could not grab {name} ({}): {e}", path.display());
             continue;
         }
-        println!("Capturing: {name}");
+        println!(
+            "Capturing: {name}{}",
+            if touchpad { " (touchpad)" } else { "" }
+        );
         count += 1;
         let tx = tx.clone();
-        thread::spawn(move || {
-            // Stops when the device is unplugged (fetch_events errors)
-            while let Ok(it) = dev.fetch_events() {
-                let evs: Vec<Ev> = it
-                    .filter(|e| {
-                        let t = e.event_type();
-                        t == EventType::KEY || t == EventType::RELATIVE
-                    })
-                    .map(|e| (e.event_type().0, e.code(), e.value()))
-                    .collect();
-                if !evs.is_empty() && tx.send(evs).is_err() {
-                    break;
+        if touchpad {
+            thread::spawn(move || {
+                // Absolute finger position within the pad's own bounding
+                // box, tracked frame to frame and re-emitted as relative
+                // motion, the same wire shape a mouse already uses. Reset
+                // on finger-up so the next touch-down doesn't register as a
+                // huge jump from wherever the finger last was.
+                let mut last_x: Option<i32> = None;
+                let mut last_y: Option<i32> = None;
+                while let Ok(it) = dev.fetch_events() {
+                    let mut evs: Vec<Ev> = Vec::new();
+                    for e in it {
+                        match e.event_type() {
+                            EventType::ABSOLUTE if e.code() == AbsoluteAxisType::ABS_X.0 => {
+                                if let Some(lx) = last_x {
+                                    let dx = e.value() - lx;
+                                    if dx != 0 {
+                                        evs.push((
+                                            EventType::RELATIVE.0,
+                                            RelativeAxisType::REL_X.0,
+                                            dx,
+                                        ));
+                                    }
+                                }
+                                last_x = Some(e.value());
+                            }
+                            EventType::ABSOLUTE if e.code() == AbsoluteAxisType::ABS_Y.0 => {
+                                if let Some(ly) = last_y {
+                                    let dy = e.value() - ly;
+                                    if dy != 0 {
+                                        evs.push((
+                                            EventType::RELATIVE.0,
+                                            RelativeAxisType::REL_Y.0,
+                                            dy,
+                                        ));
+                                    }
+                                }
+                                last_y = Some(e.value());
+                            }
+                            EventType::KEY => {
+                                if (e.code() == Key::BTN_TOOL_FINGER.code()
+                                    || e.code() == Key::BTN_TOUCH.code())
+                                    && e.value() == 0
+                                {
+                                    last_x = None;
+                                    last_y = None;
+                                }
+                                evs.push((e.event_type().0, e.code(), e.value()));
+                            }
+                            EventType::SYNCHRONIZATION => {
+                                evs.push((e.event_type().0, e.code(), e.value()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !evs.is_empty() && tx.send(evs).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            });
+        } else {
+            thread::spawn(move || {
+                // Stops when the device is unplugged (fetch_events errors)
+                while let Ok(it) = dev.fetch_events() {
+                    let evs: Vec<Ev> = it
+                        .filter(|e| {
+                            let t = e.event_type();
+                            t == EventType::KEY || t == EventType::RELATIVE
+                        })
+                        .map(|e| (e.event_type().0, e.code(), e.value()))
+                        .collect();
+                    if !evs.is_empty() && tx.send(evs).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
     }
     drop(tx);
     if count == 0 {
