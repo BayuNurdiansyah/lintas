@@ -62,7 +62,17 @@ impl ClipSync {
     /// Reads a clipboard payload of `len` bytes that follows a [`T_CLIP`]
     /// frame already consumed by the caller, and applies it locally.
     pub fn receive(&mut self, stream: &mut impl Read, len: usize) -> io::Result<()> {
-        let len = len.min(MAX_LEN);
+        if len > MAX_LEN {
+            // Don't silently read only the first MAX_LEN bytes: the peer
+            // already committed to sending `len` bytes, so anything less
+            // leaves the rest sitting on the stream and desyncs every frame
+            // read after this one. Treat an oversized claim as a protocol
+            // violation and drop the connection instead.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("clipboard payload too large ({len} bytes, max {MAX_LEN})"),
+            ));
+        }
         let mut bytes = vec![0u8; len];
         read_exact_patient(stream, &mut bytes)?;
         let Ok(text) = String::from_utf8(bytes) else {
@@ -76,10 +86,17 @@ impl ClipSync {
     }
 }
 
+/// Give up on a stalled payload after this long, rather than hanging the
+/// connection (and, on `serve`, blocking every other connection behind it
+/// since only one is serviced at a time) forever.
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Like `read_exact`, but treats a read timeout as "keep waiting" instead
 /// of aborting and losing the bytes already read — the stream is
-/// non-blocking, so the caller can poll for other work in between.
+/// non-blocking, so the caller can poll for other work in between. Gives up
+/// after [`RECEIVE_TIMEOUT`] if the peer never finishes sending.
 fn read_exact_patient(stream: &mut impl Read, buf: &mut [u8]) -> io::Result<()> {
+    let deadline = Instant::now() + RECEIVE_TIMEOUT;
     let mut filled = 0;
     while filled < buf.len() {
         match stream.read(&mut buf[filled..]) {
@@ -96,6 +113,12 @@ fn read_exact_patient(stream: &mut impl Read, buf: &mut [u8]) -> io::Result<()> 
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "clipboard payload took too long to arrive",
+                    ));
+                }
                 // The header already promised this many bytes are coming, so
                 // a short sleep here just avoids busy-spinning a CPU core
                 // while they arrive, without meaningfully adding latency.

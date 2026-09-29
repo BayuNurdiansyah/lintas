@@ -107,9 +107,20 @@ pub struct TrayHandle {
 
 impl TrayHandle {
     /// Update the status line shown in the tray's tooltip and menu.
+    ///
+    /// Fire-and-forget: schedules the D-Bus update on the tray's own
+    /// background runtime and returns immediately, rather than blocking the
+    /// caller on the round trip. This is called from `serve`'s and `host`'s
+    /// hot per-event loops (e.g. on every edge crossing) — a slow or hung
+    /// D-Bus session bus must never stall input forwarding, which is exactly
+    /// the class of bug this project has already hit twice with blocking
+    /// calls in that same loop (see CLAUDE.md).
     pub fn set_status(&self, status: impl Into<String>) {
         let status = status.into();
-        self.rt.block_on(self.tray.update(|t| t.status = status));
+        let tray = self.tray.clone();
+        self.rt.spawn(async move {
+            tray.update(|t| t.status = status).await;
+        });
     }
 }
 

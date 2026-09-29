@@ -207,8 +207,11 @@ fn screen_from_args(args: &[String], config: &config::Config) -> Screen {
         .and_then(|v| v.parse().ok())
         .or(config.height);
     let s = Screen {
-        w: w.unwrap_or(detected.w),
-        h: h.unwrap_or(detected.h),
+        // `.max(1.0)` guards against a bad --width/--height or config value
+        // (zero, negative, or unparseable-but-slipped-through) later
+        // panicking a `.clamp(min, max)` call elsewhere.
+        w: w.unwrap_or(detected.w).max(1.0),
+        h: h.unwrap_or(detected.h).max(1.0),
     };
     println!("Screen: {}x{} px", s.w, s.h);
     s
@@ -405,6 +408,11 @@ fn serve(port: u16, screen: Screen, warp: bool, show_tray: bool) -> io::Result<(
         };
         let _ = tcp.set_nodelay(true);
         let peer = tcp.peer_addr().ok();
+        // Bounds how long a stalled handshake (accidental or a deliberate
+        // hang) can occupy this slot: only one connection is serviced at a
+        // time, so without this an unresponsive client would block every
+        // legitimate host from ever connecting.
+        let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
         let conn = match rustls::ServerConnection::new(tls_config.clone()) {
             Ok(c) => c,
             Err(e) => {
@@ -413,6 +421,30 @@ fn serve(port: u16, screen: Screen, warp: bool, show_tray: bool) -> io::Result<(
             }
         };
         let mut s = tls::ServerStream::new(conn, tcp);
+        if let Err(e) = s.conn.complete_io(&mut s.sock) {
+            eprintln!("TLS handshake with {peer:?} failed: {e}");
+            continue;
+        }
+        // Pairing is mutual: `host` already verifies *this* machine's
+        // identity (see tls.rs). Without also checking the host's identity
+        // here, anyone on the network who merely completes a TLS handshake
+        // (which needs no secret at all) could inject input into this
+        // machine — pairing would only have protected the other direction.
+        let host_key = peer.map(|p| p.ip().to_string());
+        let pairing = (|| -> io::Result<()> {
+            let key = host_key
+                .as_deref()
+                .ok_or_else(|| io::Error::other("connection has no peer address"))?;
+            let fp = tls::peer_fingerprint_server(&s.conn)
+                .ok_or_else(|| io::Error::other("host sent no certificate"))?;
+            // serve never grabs input devices, so a stdin prompt here is
+            // always safe, unlike the equivalent check on the host side.
+            tls::confirm_pairing("hosts", key, &fp, true)
+        })();
+        if let Err(e) = pairing {
+            eprintln!("Rejecting connection from {peer:?}: {e}");
+            continue;
+        }
         let mut hello = Vec::new();
         encode(&mut hello, (T_HELLO, screen.h as u16, screen.w as i32));
         if s.write_all(&hello).is_err() {
@@ -529,6 +561,10 @@ struct Host {
     /// Keys whose press was delivered to the active target
     sent: HashSet<u16>,
     out: Vec<Ev>,
+    /// Reused across `send()` calls to avoid allocating a fresh `Vec` on
+    /// every flush, on what's otherwise the hottest path in the program
+    /// (every mouse-move batch while controlling the remote).
+    send_buf: Vec<u8>,
     last_try: Option<Instant>,
     clip: clipboard::ClipSync,
     in_framer: FrameReader,
@@ -588,14 +624,14 @@ impl Host {
             .remote
             .as_mut()
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))?;
-        let mut buf = Vec::with_capacity((evs.len() + 1) * 8);
+        self.send_buf.clear();
         for &e in evs {
-            encode(&mut buf, e);
+            encode(&mut self.send_buf, e);
         }
         if syn {
-            encode(&mut buf, (EventType::SYNCHRONIZATION.0, 0, 0));
+            encode(&mut self.send_buf, (EventType::SYNCHRONIZATION.0, 0, 0));
         }
-        s.write_all(&buf)
+        s.write_all(&self.send_buf)
     }
 
     /// Release every key still held on the active target.
@@ -639,7 +675,7 @@ impl Host {
             let fp = tls::peer_fingerprint(&s.conn).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "peer sent no certificate")
             })?;
-            tls::confirm_pairing(&self.peer.to_string(), &fp, interactive)?;
+            tls::confirm_pairing("peers", &self.peer.to_string(), &fp, interactive)?;
             let mut b = [0u8; 8];
             s.read_exact(&mut b)?;
             let (t, h, w) = decode(&b);
@@ -657,7 +693,9 @@ impl Host {
             Ok((
                 s,
                 Screen {
-                    w: w as f64,
+                    // Guards against a later `.clamp(min, max)` panicking
+                    // (min > max) if a peer ever reports a non-positive size.
+                    w: (w as f64).max(1.0),
                     h: (h as f64).max(1.0),
                 },
             ))
@@ -808,7 +846,11 @@ fn host(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid peer address"))?;
     let local = make_vdev(&format!("{VDEV_PREFIX}-local"))?;
     let placer = Placer::new(&format!("{VDEV_PREFIX}-local-placer"), warp);
-    let tls_config = tls::client_config()?;
+    // Presented to `serve` as this machine's identity, so `serve` can pair
+    // with (and thereafter recognize) this specific host instead of
+    // accepting input from any device that merely completes a handshake.
+    let identity = tls::load_or_create_identity()?;
+    let tls_config = tls::client_config(&identity)?;
 
     let mut h = Host {
         local,
@@ -831,6 +873,7 @@ fn host(
         held: HashSet::new(),
         sent: HashSet::new(),
         out: Vec::new(),
+        send_buf: Vec::new(),
         last_try: None,
         clip: clipboard::ClipSync::new(),
         in_framer: FrameReader::default(),

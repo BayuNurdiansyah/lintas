@@ -187,9 +187,11 @@ Setting `peer` here lets you run `lintas host` on its own, with no address and w
 
 ## Pairing and security
 
-The first time a `host` machine connects to a `serve` machine it has not seen before, both sides display the same six digit code, derived from the serve machine's certificate. Confirm on the host that the two codes match, and that pairing is remembered from then on, stored at `~/.local/share/lintas/trusted_peers`. If a previously paired machine ever presents a different certificate, for example because it was reinstalled or a different device is answering on that address, the connection is refused rather than silently trusted again. To intentionally re-pair such a machine, remove its entry from that file and connect again.
+Pairing works in both directions: `host` confirms it is talking to the right `serve` machine, and `serve` confirms it is accepting input from a `host` it recognizes, not from any other device on the network.
 
-All traffic between the two machines, both input events and clipboard content, is encrypted over this same connection.
+The first time the two machines connect to each other, each side displays a six digit code, derived from the other machine's certificate. Confirm on both screens that the codes shown match what the other machine displays, and pairing is remembered from then on: `host` stores it in `~/.local/share/lintas/trusted_peers`, `serve` in `~/.local/share/lintas/trusted_hosts`. If a previously paired machine ever presents a different certificate, for example because it was reinstalled or a different device is answering on that address, the connection is refused rather than silently trusted again. To intentionally re-pair such a machine, remove its entry from the relevant file and connect again.
+
+All traffic between the two machines, both input events and clipboard content, is encrypted over this same connection, and both ends authenticate each other before any input is forwarded.
 
 ## Autostart on login (systemd)
 
@@ -202,7 +204,9 @@ cp packaging/lintas-serve.service ~/.config/systemd/user/
 systemctl --user enable --now lintas-serve
 ```
 
-To do the same for `host`, first make sure `peer` and `side` are set in `~/.config/lintas/config.toml` (see Configuration above), and that you have already paired with that machine manually at least once, since a background service has no terminal to confirm a pairing code with:
+Before enabling either service for the first time, pair the two machines manually at least once by running `serve` and `host` directly in a terminal on each (see Usage above), since a background service has no terminal to confirm a pairing code with, on either side.
+
+To do the same for `host`, first make sure `peer` and `side` are set in `~/.config/lintas/config.toml` (see Configuration above):
 
 ```bash
 mkdir -p ~/.local/bin ~/.config/systemd/user
