@@ -118,7 +118,7 @@ User explicitly asked for a full security + resource-usage review ("PASTIKAN SEM
 - Host: CachyOS PC with 2 monitors, wired Ethernet, subnet 192.168.100.x.
 - Serve: laptop running Kali Linux, physically on the LEFT of the PC, WiFi, subnet 192.168.110.x (different subnet/VLAN from the PC — this is why mDNS discovery doesn't work here, see the roadmap note).
 - `peer`/`side` are set in the PC's `~/.config/lintas/config.toml`, so `lintas host` alone connects without typing an IP or relying on mDNS.
-- **Both trust stores on this PC (`trusted_peers` and `trusted_hosts`) are currently empty** — cleared during the mutual-pairing security testing above (a leftover test entry in `trusted_hosts` was also cleaned up afterward). The real laptop needs manual re-pairing on next connect: run `lintas host <laptop-ip>` once interactively (not via the `lintas-host` systemd service, which can't answer the new host-side prompt either) so *both* directions' pairing codes can be confirmed, then the systemd service will work headless again as before.
+- Mutual pairing re-verified end to end on the real laptop + PC pair after updating both machines to the mutual-auth build: manually stopped both systemd services, ran `serve`/`host` interactively, confirmed both new pairing-code prompts (host-to-serve as before, plus the new serve-to-host one), reconnected successfully, then restarted both services headless. Confirmed working.
 - Laptop touchpad stays local on the laptop (not captured), that's intended.
 
 ## Status
