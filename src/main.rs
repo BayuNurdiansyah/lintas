@@ -33,9 +33,43 @@ use std::time::{Duration, Instant};
 mod clipboard;
 mod config;
 mod discover;
-mod settings_gui;
 mod tls;
+
+// Both the settings GUI and the tray icon are optional, feature-gated UI on
+// top of core functionality that never depends on either (see Cargo.toml).
+// When a feature is off, a tiny stub with the same API stands in, so no
+// call site elsewhere needs its own `#[cfg(...)]` — it just becomes a no-op
+// (tray) or a clear runtime error (settings, which has nothing sensible to
+// do as a no-op).
+#[cfg(feature = "gui")]
+#[path = "settings_gui.rs"]
+mod settings_gui;
+#[cfg(not(feature = "gui"))]
+mod settings_gui {
+    pub fn run() -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "this binary was built without the \"gui\" feature, so `lintas settings` isn't \
+             available. Edit ~/.config/lintas/config.toml directly instead, or rebuild with \
+             default features.",
+        ))
+    }
+}
+
+#[cfg(feature = "tray")]
+#[path = "tray.rs"]
 mod tray;
+#[cfg(not(feature = "tray"))]
+mod tray {
+    pub struct TrayHandle;
+    impl TrayHandle {
+        pub fn set_status(&self, _status: impl Into<String>) {}
+    }
+    /// Always `None`: `--tray`/`tray = true` are accepted but silently do
+    /// nothing in a binary built without the "tray" feature.
+    pub fn spawn(_initial_status: &str) -> Option<TrayHandle> {
+        None
+    }
+}
 
 const DEFAULT_PORT: u16 = 4242;
 const VDEV_PREFIX: &str = "lintas";
@@ -575,16 +609,17 @@ impl Host {
     /// Reads any pending frames from the remote (currently just clipboard
     /// updates) and pushes local clipboard changes out, without blocking.
     fn service_clipboard(&mut self) -> io::Result<()> {
-        if self.remote.is_none() {
+        let Some(remote) = self.remote.as_mut() else {
             return Ok(());
-        }
-        let poll_result = self.in_framer.poll(self.remote.as_mut().unwrap());
-        match poll_result {
+        };
+        match self.in_framer.poll(remote) {
             Ok(Some(buf)) => {
                 let (t, _c, v) = decode(&buf);
                 if t == T_CLIP {
-                    self.clip
-                        .receive(self.remote.as_mut().unwrap(), v.max(0) as usize)?;
+                    let Some(remote) = self.remote.as_mut() else {
+                        return Ok(());
+                    };
+                    self.clip.receive(remote, v.max(0) as usize)?;
                 }
             }
             Ok(None) => {}
@@ -597,7 +632,10 @@ impl Host {
                 return Ok(());
             }
         }
-        self.clip.poll_and_send(self.remote.as_mut().unwrap())
+        let Some(remote) = self.remote.as_mut() else {
+            return Ok(());
+        };
+        self.clip.poll_and_send(remote)
     }
 
     /// Deliver buffered events to the active target.

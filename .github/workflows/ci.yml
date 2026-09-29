@@ -31,6 +31,21 @@ jobs:
           name: lintas-x86_64-linux
           path: target/release/lintas
 
+  # The "tray" and "gui" features are optional (see Cargo.toml) — this keeps
+  # the headless-CLI build path (no GUI toolkit, no D-Bus stack) actually
+  # compiling and passing clippy, instead of silently bitrotting.
+  build-minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --release --no-default-features -- -D warnings
+      - run: cargo build --release --no-default-features
+      - run: test $(stat -c%s target/release/lintas) -lt 8000000
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build

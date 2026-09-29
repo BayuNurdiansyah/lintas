@@ -6,8 +6,10 @@ edition = "2021"
 [dependencies]
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 evdev = "0.12"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
-ksni = "0.3.6"
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+], optional = true }
+ksni = { version = "0.3.6", optional = true }
 mdns-sd = "0.21.4"
 rcgen = "0.14.10"
 ring = "0.17.14"
@@ -17,8 +19,20 @@ slint = { version = "1.18.1", default-features = false, features = [
     "backend-winit",
     "renderer-femtovg",
     "compat-1-2",
-] }
-tokio = { version = "1.53.1", default-features = false, features = ["rt"] }
+], optional = true }
+tokio = { version = "1.53.1", default-features = false, features = [
+    "rt",
+], optional = true }
+
+[features]
+# Core serve/host/clipboard/pairing/mDNS functionality never depends on
+# these; both are purely additive UI. Disabling them drops the binary from
+# ~20MB to a couple MB by cutting out the GUI toolkit (Slint/winit) and the
+# D-Bus/async stack (tokio/ksni) entirely, for anyone who only wants the
+# headless CLI (e.g. a minimal server-only install).
+default = ["tray", "gui"]
+tray = ["dep:ksni", "dep:tokio", "dep:image"]
+gui = ["dep:slint"]
 
 [profile.release]
 opt-level = 3

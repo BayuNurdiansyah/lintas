@@ -67,6 +67,9 @@ pub fn load() -> Config {
 
 /// Writes the config file, replacing whatever was there (used by
 /// `lintas settings`; comments in a hand-edited file won't survive this).
+/// Only called by `lintas settings` (the `gui` feature); unused, but not
+/// dead code, in a binary built without it.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn save(c: &Config) -> std::io::Result<()> {
     let path = config_path();
     if let Some(dir) = path.parent() {
