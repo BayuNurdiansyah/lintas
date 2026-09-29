@@ -42,6 +42,12 @@ pub fn advertise(port: u16) -> io::Result<ServiceDaemon> {
     Ok(mdns)
 }
 
+/// Drops control characters (including ANSI escapes) from untrusted,
+/// network-supplied text before it's ever printed to a terminal.
+fn sanitize(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
 struct Found {
     name: String,
     addr: SocketAddr,
@@ -64,7 +70,12 @@ pub fn find_peer() -> io::Result<SocketAddr> {
             let Some(ip) = info.get_addresses_v4().into_iter().next() else {
                 continue;
             };
-            let name = info.get_hostname().trim_end_matches(".local.").to_string();
+            // This name comes straight from an mDNS broadcast — from any
+            // device on the network, not just a paired one — and gets
+            // printed to the terminal below. Strip control characters (e.g.
+            // ANSI escapes) so a malicious broadcaster can't manipulate the
+            // terminal output before pairing has even happened.
+            let name = sanitize(info.get_hostname().trim_end_matches(".local."));
             let addr = SocketAddr::new(ip.into(), info.get_port());
             if !found.iter().any(|f| f.addr == addr) {
                 found.push(Found { name, addr });
