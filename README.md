@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo-primary.png?v=2" width="120" alt="lintas logo">
+  <img src="assets/logo-primary.png?v=3" width="120" alt="lintas logo">
 </p>
 
 <h1 align="center">lintas</h1>
