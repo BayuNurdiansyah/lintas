@@ -15,7 +15,7 @@ Share one mouse and keyboard between Linux machines over your LAN. Push the curs
 
 ## Install
 
-Requires Rust (`sudo pacman -S rust` on Arch, or [rustup](https://rustup.rs) elsewhere).
+**From source** (requires Rust — `sudo pacman -S rust` on Arch, or [rustup](https://rustup.rs) elsewhere):
 
 ```bash
 git clone https://github.com/BayuNurdiansyah/lintas.git
@@ -25,7 +25,17 @@ cargo build --release
 cp target/release/lintas ~/.local/bin/
 ```
 
-Do this on every machine.
+**On Arch/CachyOS**, `packaging/PKGBUILD` builds a `lintas-git` package (from the latest commit on `main`):
+
+```bash
+cd packaging
+makepkg -si
+```
+This installs the udev rule, systemd units, desktop entry and icons for you; it still prints a one-time reminder to run `usermod -aG input $USER` and load the `uinput` module (a package can't safely do that for you), and you still need to open the firewall ports yourself (see below).
+
+**AppImage**: download `lintas-x86_64.AppImage` from the [releases page](https://github.com/BayuNurdiansyah/lintas/releases) (or build it yourself with `packaging/build-appimage.sh`, which needs [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) — downloaded automatically if missing), `chmod +x` it, and run it directly. It bundles the settings GUI's shared libraries so it runs on most distros without installing anything, but device access (`/dev/input`, `/dev/uinput`) still needs the same one-time setup as above — the AppImage can't grant that itself either.
+
+Whichever method you use, do it on every machine.
 
 ## Usage
 
@@ -81,6 +91,7 @@ To autostart on the serve side, see `packaging/lintas-serve.service`. To autosta
 - [x] Clipboard sync
 - [x] Tray icon (`--tray`)
 - [x] Settings UI (`lintas settings`) for the config file
+- [x] AUR (`packaging/PKGBUILD`) and AppImage (`packaging/build-appimage.sh`) packaging
 - [ ] Touchpad capture on the host
 - [ ] More than two machines
 

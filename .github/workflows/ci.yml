@@ -11,6 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxcb1-dev libgl1-mesa-dev libfontconfig1-dev libfreetype6-dev \
+            libwayland-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -37,7 +44,21 @@ jobs:
           name: lintas-x86_64-linux
       - run: |
           chmod +x lintas
+          mkdir -p target/release
+          cp lintas target/release/lintas
           tar czf lintas-x86_64-linux.tar.gz lintas packaging README.md LICENSE
+      - name: Install AppImage runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon0 libx11-6 libxcursor1 libxi6 libxrandr2 libxcb1 \
+            libgl1 libfontconfig1 libfreetype6 libwayland-client0
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: bash packaging/build-appimage.sh
       - uses: softprops/action-gh-release@v2
         with:
-          files: lintas-x86_64-linux.tar.gz
+          files: |
+            lintas-x86_64-linux.tar.gz
+            lintas-*.AppImage

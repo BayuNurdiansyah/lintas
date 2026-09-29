@@ -1,0 +1,47 @@
+# Maintainer: BayuNurdiansyah
+# Builds from the latest commit on main. For AUR submission, run
+# `makepkg --printsrcinfo > .SRCINFO` after any change to this file.
+pkgname=lintas-git
+pkgver=r1.0000000
+pkgrel=1
+pkgdesc="Zero-config, compositor-agnostic mouse/keyboard sharing over LAN"
+arch=('x86_64')
+url="https://github.com/BayuNurdiansyah/lintas"
+license=('MIT')
+depends=('systemd' 'gcc-libs' 'fontconfig' 'libxkbcommon')
+makedepends=('cargo' 'git')
+provides=('lintas')
+conflicts=('lintas')
+install=lintas.install
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$pkgname"
+	printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+	cd "$pkgname"
+	cargo build --release --locked
+}
+
+check() {
+	cd "$pkgname"
+	cargo test --release --locked
+}
+
+package() {
+	cd "$pkgname"
+	install -Dm755 target/release/lintas "$pkgdir/usr/bin/lintas"
+	install -Dm644 packaging/lintas.desktop "$pkgdir/usr/share/applications/lintas.desktop"
+	install -Dm644 assets/icons/lintas-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/lintas.png"
+	install -Dm644 assets/icons/lintas-128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/lintas.png"
+	install -Dm644 assets/icons/lintas-64.png "$pkgdir/usr/share/icons/hicolor/64x64/apps/lintas.png"
+	install -Dm644 packaging/99-lintas.rules "$pkgdir/usr/lib/udev/rules.d/99-lintas.rules"
+	install -Dm644 packaging/lintas-serve.service "$pkgdir/usr/lib/systemd/user/lintas-serve.service"
+	install -Dm644 packaging/lintas-host.service "$pkgdir/usr/lib/systemd/user/lintas-host.service"
+	install -Dm644 packaging/config.toml.example "$pkgdir/usr/share/doc/$pkgname/config.toml.example"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

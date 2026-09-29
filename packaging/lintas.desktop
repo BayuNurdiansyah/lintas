@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=lintas
+Comment=Zero-config, compositor-agnostic mouse/keyboard sharing over LAN
+Exec=lintas settings
+Icon=lintas
+Terminal=false
+Categories=Utility;Network;
+NoDisplay=false
