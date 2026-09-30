@@ -24,7 +24,7 @@
 
 ## Contents
 
-[Why](#why) · [Features](#features) · [How it compares](#how-it-compares) · [How it works](#how-it-works) · [Requirements](#requirements) · [Install](#install) · [Usage](#usage) · [Configuration](#configuration) · [Pairing and security](#pairing-and-security) · [Autostart](#autostart-on-login-systemd) · [Limitations](#known-limitations) · [Roadmap](#roadmap) · [License](#license)
+[Why](#why) · [Features](#features) · [How it compares](#how-it-compares) · [How it works](#how-it-works) · [Requirements](#requirements) · [Install](#install) · [Usage](#usage) · [Configuration](#configuration) · [Pairing and security](#pairing-and-security) · [Autostart](#autostart-on-login-systemd) · [Limitations](#known-limitations) · [License](#license)
 
 ## Why
 
@@ -242,20 +242,6 @@ AUR install already places these files, just `systemctl --user enable --now` the
 - **mDNS doesn't cross subnets/VLANs.** Multicast networking, not something lintas can fix in software. Use `peer` in the config or a direct address.
 - **Touchpad gestures aren't captured, only basic pointer movement and clicks.** Multi-finger scroll/zoom/swipe gestures are handled by your desktop's own driver stack (libinput and friends), which lintas bypasses entirely by design; only single-finger position and physical clicks are forwarded.
 - **Two machines only, for now.** One `serve`, one `host`.
-
-## Roadmap
-
-- [x] evdev → uinput forwarding, hotkey switching
-- [x] Edge switching, multi-monitor detection, cursor height preserved
-- [x] Mutual TLS encryption and pairing
-- [x] systemd autostart
-- [x] mDNS auto-discovery
-- [x] Clipboard sync
-- [x] System tray icon
-- [x] Settings window
-- [x] AUR package and AppImage
-- [x] Touchpad capture on the host (pointer movement and clicks; no multi-finger gestures)
-- [ ] More than two machines
 
 ## License
 
